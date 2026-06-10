@@ -50,7 +50,11 @@ no_implicit_reexport = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["confluent_kafka.*", "airflow.*", "sklearn.*", "psycopg2.*"]
+module = ["confluent_kafka.*", "airflow.*", "sklearn.*", "psycopg2.*", "lightgbm.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["anthropic.*", "openai.*"]
 ignore_missing_imports = true
 
 # ── Pytest ────────────────────────────────────────────────────────────────────

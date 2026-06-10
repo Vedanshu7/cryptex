@@ -5,3 +5,5 @@ lightgbm==4.3.0
 pandas==2.2.1
 numpy==1.26.4
 prometheus-client==0.20.0
+anthropic>=0.25          # LLM signal source (Anthropic Claude); safe to omit if unused
+# openai>=1.0            # Uncomment to enable OpenAI provider
