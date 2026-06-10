@@ -1,15 +1,17 @@
 """Signal pipeline runner.
 
-Two concurrent async tasks:
-  1. Prediction loop  — every SIGNAL_INTERVAL_SECONDS (default 300 = 5 min)
-                        generate and publish a signal per symbol.
-  2. Daily retrain    — every RETRAIN_INTERVAL_HOURS (default 24)
-                        fetch the last TRAINING_LOOKBACK_DAYS of real candles
-                        from TimescaleDB and retrain the LightGBM model.
+Concurrent async tasks per active signal source:
+  - ML source  : prediction every SIGNAL_INTERVAL_SECONDS (default 300 s)
+                 + daily retrain loop (RETRAIN_INTERVAL_HOURS)
+  - LLM source : prediction every LLM_SIGNAL_INTERVAL_SECONDS (default 900 s)
+                 (no retrain — the LLM model is managed by the provider)
 
-On startup the model runs in warm-up mode (synthetic labels) until the first
-retrain completes. Predictions are emitted regardless — callers can use the
-`trained_on_real` flag to decide whether to act on warm-up signals.
+Select active sources via SIGNAL_SOURCE env var:
+  ml   — LightGBM only (default)
+  llm  — LLM agent only
+  both — both run independently on their own cadences
+
+On startup each source's warmup() is called before any prediction loop begins.
 """
 
 import asyncio
@@ -22,60 +24,92 @@ from shared.logger import get_logger
 from shared.metrics import signal_confidence as signal_confidence_metric, start_metrics_server
 from shared.models import Candle
 
+from .base import BaseSignalSource
 from .features import build_features
-from .model import SignalGenerator
+from .llm_source import LLMSignalSource
+from .model import MLSignalSource
 
 _logger = get_logger(__name__)
 
-SYMBOLS: list[str]         = os.getenv("TRADE_SYMBOLS", "BTCUSDT,ETHUSDT").upper().split(",")
-INTERVAL_SECONDS: int      = int(os.getenv("SIGNAL_INTERVAL_SECONDS", "300"))
-RETRAIN_HOURS: int         = int(os.getenv("RETRAIN_INTERVAL_HOURS", "24"))
-CANDLE_LOOKBACK: int       = 100
+SYMBOLS: list[str]          = os.getenv("TRADE_SYMBOLS", "BTCUSDT,ETHUSDT").upper().split(",")
+SIGNAL_SOURCE: str          = os.getenv("SIGNAL_SOURCE", "ml").lower()
+INTERVAL_SECONDS: int       = int(os.getenv("SIGNAL_INTERVAL_SECONDS", "300"))
+LLM_INTERVAL_SECONDS: int   = int(os.getenv("LLM_SIGNAL_INTERVAL_SECONDS", "900"))
+RETRAIN_HOURS: int          = int(os.getenv("RETRAIN_INTERVAL_HOURS", "24"))
+CANDLE_LOOKBACK: int        = 100
 TRAINING_LOOKBACK_DAYS: int = int(os.getenv("TRAINING_LOOKBACK_DAYS", "30"))
 # 5-min candles × 288/day × N days
 TRAINING_LOOKBACK_CANDLES: int = 288 * TRAINING_LOOKBACK_DAYS
 
 
+def _build_sources() -> dict[str, BaseSignalSource]:
+    """Instantiate signal sources based on SIGNAL_SOURCE env var."""
+    sources: dict[str, BaseSignalSource] = {}
+    if SIGNAL_SOURCE in ("ml", "both"):
+        sources["ml"] = MLSignalSource()
+    if SIGNAL_SOURCE in ("llm", "both"):
+        sources["llm"] = LLMSignalSource()
+    if not sources:
+        raise ValueError(
+            f"Unknown SIGNAL_SOURCE={SIGNAL_SOURCE!r}. Use 'ml', 'llm', or 'both'."
+        )
+    _logger.info("Signal sources configured.", extra={"active": list(sources.keys())})
+    return sources
+
+
 async def run() -> None:
-    """Start prediction and retrain loops concurrently."""
+    """Warm up all sources then start prediction and retrain loops."""
     _logger.info(
         "Signal pipeline starting.",
         extra={
-            "symbols":          SYMBOLS,
-            "interval_seconds": INTERVAL_SECONDS,
-            "retrain_hours":    RETRAIN_HOURS,
+            "symbols":        SYMBOLS,
+            "signal_source":  SIGNAL_SOURCE,
+            "ml_interval_s":  INTERVAL_SECONDS,
+            "llm_interval_s": LLM_INTERVAL_SECONDS,
+            "retrain_hours":  RETRAIN_HOURS,
         },
     )
 
-    generator = SignalGenerator()
-    producer  = KafkaClientFactory.create_producer("signal-pipeline")
+    sources  = _build_sources()
+    producer = KafkaClientFactory.create_producer("signal-pipeline")
 
-    await asyncio.gather(
-        _prediction_loop(generator, producer),
-        _retrain_loop(generator),
-    )
+    for src in sources.values():
+        src.warmup()
+
+    tasks = []
+    if "ml" in sources:
+        tasks.append(_prediction_loop(sources["ml"], producer, INTERVAL_SECONDS))
+        tasks.append(_retrain_loop(sources["ml"]))
+    if "llm" in sources:
+        tasks.append(_prediction_loop(sources["llm"], producer, LLM_INTERVAL_SECONDS))
+
+    await asyncio.gather(*tasks)
 
 
-async def _prediction_loop(generator: SignalGenerator, producer: object) -> None:
-    """Publish a signal for each symbol every INTERVAL_SECONDS."""
+async def _prediction_loop(
+    source: BaseSignalSource,
+    producer: object,
+    interval: int,
+) -> None:
+    """Publish a signal for each symbol every *interval* seconds."""
     while True:
         for symbol in SYMBOLS:
-            _generate_and_publish(symbol, generator, producer)
-        await asyncio.sleep(INTERVAL_SECONDS)
+            _generate_and_publish(symbol, source, producer)
+        await asyncio.sleep(interval)
 
 
-async def _retrain_loop(generator: SignalGenerator) -> None:
-    """Retrain the model on fresh DB candles every RETRAIN_HOURS."""
+async def _retrain_loop(source: BaseSignalSource) -> None:
+    """Retrain the source on fresh DB candles every RETRAIN_HOURS."""
     # Retrain immediately on first startup so we exit warm-up mode ASAP.
-    _do_retrain(generator)
+    _do_retrain(source)
 
     while True:
         await asyncio.sleep(RETRAIN_HOURS * 3_600)
-        _do_retrain(generator)
+        _do_retrain(source)
 
 
-def _do_retrain(generator: SignalGenerator) -> None:
-    """Fetch training candles for all symbols and retrain the model."""
+def _do_retrain(source: BaseSignalSource) -> None:
+    """Fetch training candles for all symbols and call source.retrain()."""
     _logger.info("Starting scheduled model retrain.",
                  extra={"lookback_days": TRAINING_LOOKBACK_DAYS})
 
@@ -89,15 +123,15 @@ def _do_retrain(generator: SignalGenerator) -> None:
         _logger.warning("No candles available for retrain — staying on current model.")
         return
 
-    generator.retrain(candles_by_symbol)
+    source.retrain(candles_by_symbol)
 
 
 def _generate_and_publish(
     symbol: str,
-    generator: SignalGenerator,
+    source: BaseSignalSource,
     producer: object,
 ) -> None:
-    """Fetch prediction candles, build features, predict, publish."""
+    """Fetch prediction candles, build features, predict, publish to Kafka."""
     candles = _fetch_candles(symbol, limit=CANDLE_LOOKBACK)
 
     if len(candles) < 26:
@@ -111,7 +145,7 @@ def _generate_and_publish(
     if features is None:
         return
 
-    signal = generator.predict(symbol, features)
+    signal = source.predict(symbol, candles, features)
 
     producer.produce(  # type: ignore[union-attr]
         topic="trade-signals",
@@ -128,10 +162,10 @@ def _generate_and_publish(
     _logger.info(
         "Signal published.",
         extra={
-            "symbol":           signal.symbol,
-            "side":             signal.side.value,
-            "confidence":       signal.confidence,
-            "trained_on_real":  generator.trained_on_real,
+            "symbol":     signal.symbol,
+            "side":       signal.side.value,
+            "confidence": signal.confidence,
+            "source":     signal.source,
         },
     )
 
@@ -161,12 +195,12 @@ def _fetch_candles(symbol: str, limit: int) -> list[Candle]:
 
     return [
         Candle(
-            symbol   = row[1],
-            open     = float(row[2]),
-            high     = float(row[3]),
-            low      = float(row[4]),
-            close    = float(row[5]),
-            volume   = float(row[6]),
+            symbol    = row[1],
+            open      = float(row[2]),
+            high      = float(row[3]),
+            low       = float(row[4]),
+            close     = float(row[5]),
+            volume    = float(row[6]),
             opened_at = row[0],
             closed_at = row[0],
             timeframe = row[7],
