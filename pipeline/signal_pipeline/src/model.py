@@ -1,9 +1,9 @@
-"""LightGBM signal generator — industry-standard for tabular financial data.
+"""LightGBM signal source — industry-standard for tabular financial data.
 
 Training strategy:
-  1. On first startup: train on real candles from TimescaleDB if ≥ MIN_TRAINING_CANDLES
-     exist; otherwise fall back to synthetic labels until enough data accumulates.
-  2. Daily retrain: runner calls retrain() with fresh candles from the DB,
+  1. warmup(): train on synthetic data immediately so the service starts
+     without waiting for real candles.
+  2. retrain(): called daily by the runner with fresh TimescaleDB candles,
      replacing the live model atomically.
 
 LightGBM is chosen over RandomForest because:
@@ -25,16 +25,17 @@ import numpy as np
 import pandas as pd
 
 from shared.logger import get_logger
-from shared.models import TradeSide, TradeSignal
+from shared.models import Candle, TradeSide, TradeSignal
 
+from .base import BaseSignalSource
 from .features import FEATURE_COLS, build_features
 from .labeler import class_weights, label_forward_returns
 
 _logger = get_logger(__name__)
 
-SIGNAL_TTL_SECONDS: int  = int(os.getenv("SIGNAL_TTL_SECONDS",  "90"))
-MIN_CONFIDENCE: float     = float(os.getenv("SIGNAL_MIN_CONFIDENCE", "0.5"))
-MIN_TRAINING_CANDLES: int = int(os.getenv("MIN_TRAINING_CANDLES", "500"))
+SIGNAL_TTL_SECONDS: int   = int(os.getenv("SIGNAL_TTL_SECONDS", "90"))
+MIN_CONFIDENCE: float      = float(os.getenv("SIGNAL_MIN_CONFIDENCE", "0.5"))
+MIN_TRAINING_CANDLES: int  = int(os.getenv("MIN_TRAINING_CANDLES", "500"))
 
 # LightGBM hyperparameters tuned for noisy financial data:
 # - low learning rate + more trees avoids overfitting
@@ -55,8 +56,8 @@ _LGBM_PARAMS: dict[str, object] = {
 }
 
 
-class SignalGenerator:
-    """Thread-safe LightGBM signal generator with atomic model replacement."""
+class MLSignalSource(BaseSignalSource):
+    """Thread-safe LightGBM signal source with atomic model replacement."""
 
     def __init__(self) -> None:
         self._lock  = threading.Lock()
@@ -64,26 +65,33 @@ class SignalGenerator:
         self._classes: list[str] = ["BUY", "HOLD", "SELL"]
         self._trained_on_real = False
 
-        # Bootstrap with synthetic data so the service can start immediately.
+    # ── BaseSignalSource interface ────────────────────────────────────────────
+
+    def warmup(self) -> None:
+        """Bootstrap on synthetic data so the first prediction tick succeeds."""
         self._fit_synthetic()
 
-    # ── Public API ────────────────────────────────────────────────────────────
-
-    def predict(self, symbol: str, features: pd.DataFrame) -> TradeSignal:
+    def predict(
+        self,
+        symbol: str,
+        candles: list[Candle],
+        features: pd.DataFrame,
+    ) -> TradeSignal:
         """Predict a trading signal for the latest row in *features*.
 
         Args:
             symbol:   Trading pair (e.g. BTCUSDT).
+            candles:  Raw candle list (unused by ML source — present for ABC compat).
             features: Feature DataFrame from build_features().
 
         Returns:
-            TradeSignal with side, confidence, and TTL.
+            TradeSignal with side, confidence, TTL, and source="ml".
         """
         with self._lock:
             model = self._model
 
         if model is None:
-            raise RuntimeError("Model not fitted.")
+            raise RuntimeError("Model not fitted — call warmup() before predict().")
 
         latest = features[FEATURE_COLS].tail(1).values
         proba  = model.predict_proba(latest)[0]
@@ -94,15 +102,16 @@ class SignalGenerator:
 
         now = datetime.now(tz=timezone.utc)
         return TradeSignal(
-            id          = str(uuid.uuid4()),
-            symbol      = symbol,
-            side        = TradeSide(label),
-            confidence  = confidence,
+            id           = str(uuid.uuid4()),
+            symbol       = symbol,
+            side         = TradeSide(label),
+            confidence   = confidence,
             generated_at = now,
-            expires_at  = now + timedelta(seconds=SIGNAL_TTL_SECONDS),
+            expires_at   = now + timedelta(seconds=SIGNAL_TTL_SECONDS),
+            source       = "ml",
         )
 
-    def retrain(self, candles_by_symbol: dict[str, list]) -> None:
+    def retrain(self, candles_by_symbol: dict[str, list[Candle]]) -> None:
         """Retrain the model on fresh candles from TimescaleDB.
 
         Called by the runner's daily retrain loop. Replaces the live model
@@ -134,8 +143,8 @@ class SignalGenerator:
             if len(labels) < 100:
                 continue
 
-            weights_map  = class_weights(labels)
-            sample_w     = labels.map(weights_map)
+            weights_map = class_weights(labels)
+            sample_w    = labels.map(weights_map)
 
             all_X.append(features[FEATURE_COLS])
             all_y.append(labels)
@@ -216,6 +225,10 @@ class SignalGenerator:
 
         _logger.info("Synthetic warm-up training complete.",
                      extra={"samples": len(y)})
+
+
+# Backward-compatible alias so existing imports keep working without changes.
+SignalGenerator = MLSignalSource
 
 
 class _SyntheticCandle:

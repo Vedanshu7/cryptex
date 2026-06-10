@@ -58,7 +58,7 @@ class Candle(BaseModel):
 
 
 class TradeSignal(BaseModel):
-    """ML-generated directional signal for a trading symbol."""
+    """Directional signal for a trading symbol, produced by an ML model or LLM agent."""
 
     id: str
     symbol: str
@@ -66,6 +66,7 @@ class TradeSignal(BaseModel):
     confidence: float
     generated_at: datetime
     expires_at: datetime
+    source: str = "ml"  # "ml" | "llm" — identifies the signal generator
 
     @field_validator("confidence")
     @classmethod
