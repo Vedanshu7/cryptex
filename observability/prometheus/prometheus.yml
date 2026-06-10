@@ -1,0 +1,34 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+
+  - job_name: oms
+    static_configs:
+      - targets: ["oms:8080"]
+    metrics_path: /metrics
+
+  - job_name: ems
+    static_configs:
+      - targets: ["ems:8080"]
+    metrics_path: /metrics
+
+  - job_name: exchange-connector
+    static_configs:
+      - targets: ["exchange-connector:8000"]
+    metrics_path: /metrics
+
+  - job_name: candle-aggregator
+    static_configs:
+      - targets: ["candle-aggregator:8000"]
+    metrics_path: /metrics
+
+  - job_name: signal-router
+    static_configs:
+      - targets: ["signal-router:8000"]
+    metrics_path: /metrics
+
+  - job_name: kafka
+    static_configs:
+      - targets: ["kafka:9092"]
