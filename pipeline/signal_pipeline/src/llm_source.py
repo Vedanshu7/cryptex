@@ -1,23 +1,29 @@
-"""LLM-backed signal source.
+"""LLM-backed agentic signal source.
 
-Sends recent candle data and computed feature values to a language model
-and parses its structured JSON response into a TradeSignal.
+Uses Claude's native tool_use API for multi-step ReAct reasoning, giving the
+agent active control over what market data it inspects before producing a trade
+signal. OpenAI's function-calling API follows the same loop pattern.
+
+Agent lifecycle per predict() call:
+    1. Send initial task: "Analyse {symbol} and emit a trade signal."
+    2. Agent calls tools to fetch candles, indicators, or volatility stats.
+    3. When ready, the agent calls emit_signal — the only way to produce a
+       structured output (enforced by the tool schema).
+    4. If the loop exhausts its iteration budget, return a safe HOLD fallback.
 
 Supported providers (LLM_PROVIDER env var):
-  anthropic  — requires anthropic>=0.25 and ANTHROPIC_API_KEY
-  openai     — requires openai>=1.0 and OPENAI_API_KEY
-
-If the API key is missing or the SDK is not installed, warmup() logs a
-warning and disables the source. predict() then returns a low-confidence
-HOLD signal as a safe fallback.
+    anthropic  — requires anthropic>=0.25 and ANTHROPIC_API_KEY
+    openai     — requires openai>=1.0 and OPENAI_API_KEY
 """
 
 from __future__ import annotations
 
 import json
 import os
+import statistics
 import time
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -31,20 +37,134 @@ from .features import FEATURE_COLS
 
 _logger = get_logger(__name__)
 
-LLM_PROVIDER: str            = os.getenv("LLM_PROVIDER", "anthropic").lower()
-LLM_CANDLE_WINDOW: int       = int(os.getenv("LLM_CANDLE_WINDOW", "20"))
-LLM_MAX_RETRIES: int         = int(os.getenv("LLM_MAX_RETRIES", "3"))
-LLM_RETRY_BASE_DELAY: float  = float(os.getenv("LLM_RETRY_BASE_DELAY", "2.0"))
-SIGNAL_TTL_SECONDS: int      = int(os.getenv("SIGNAL_TTL_SECONDS", "90"))
+LLM_PROVIDER: str              = os.getenv("LLM_PROVIDER", "anthropic").lower()
+LLM_CANDLE_WINDOW: int         = int(os.getenv("LLM_CANDLE_WINDOW", "20"))
+LLM_MAX_RETRIES: int           = int(os.getenv("LLM_MAX_RETRIES", "3"))
+LLM_RETRY_BASE_DELAY: float    = float(os.getenv("LLM_RETRY_BASE_DELAY", "2.0"))
+LLM_MAX_LOOP_ITERATIONS: int   = int(os.getenv("LLM_MAX_LOOP_ITERATIONS", "8"))
+LLM_MAX_TOKENS: int            = int(os.getenv("LLM_MAX_TOKENS", "4096"))
+SIGNAL_TTL_SECONDS: int        = int(os.getenv("SIGNAL_TTL_SECONDS", "90"))
 
 _DEFAULT_MODELS: dict[str, str] = {
-    "anthropic": "claude-3-5-haiku-20241022",
-    "openai":    "gpt-4o-mini",
+    "anthropic": "claude-opus-4-8",
+    "openai":    "gpt-4o",
 }
+
+# ── Tool definitions ──────────────────────────────────────────────────────────
+
+_TOOLS: list[dict[str, Any]] = [
+    {
+        "name": "get_candles",
+        "description": (
+            "Fetch recent OHLCV candlestick data for the symbol. "
+            "Each candle covers one 5-minute bar (oldest first)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "description": "Trading pair, e.g. BTCUSDT"},
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of most-recent candles to return (1–100)",
+                    "minimum": 1,
+                    "maximum": 100,
+                },
+            },
+            "required": ["symbol", "limit"],
+        },
+    },
+    {
+        "name": "get_technical_indicators",
+        "description": (
+            "Return the latest computed technical indicators: EMA cross, RSI (14), "
+            "MACD and histogram, 1-bar and 3-bar returns, 21-bar volatility, "
+            "return z-score, volume ratio, and H-L range."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "description": "Trading pair, e.g. BTCUSDT"},
+            },
+            "required": ["symbol"],
+        },
+    },
+    {
+        "name": "analyze_volatility",
+        "description": (
+            "Return a statistical summary of recent price volatility: mean, standard "
+            "deviation, price range (%), and 5-bar momentum (%) over the last 20 candles."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "description": "Trading pair, e.g. BTCUSDT"},
+            },
+            "required": ["symbol"],
+        },
+    },
+    {
+        "name": "emit_signal",
+        "description": (
+            "Emit the final trade signal. Call this exactly once after reviewing "
+            "sufficient market data. This is the only way to produce a trading decision."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "side": {
+                    "type": "string",
+                    "enum": ["BUY", "SELL", "HOLD"],
+                    "description": (
+                        "Trade direction. Prefer HOLD when signals are mixed or "
+                        "conviction is low."
+                    ),
+                },
+                "confidence": {
+                    "type": "number",
+                    "minimum": 0.0,
+                    "maximum": 1.0,
+                    "description": (
+                        "Signal confidence 0.0–1.0. "
+                        "Use >= 0.7 for high conviction. "
+                        "Use < 0.5 only with HOLD."
+                    ),
+                },
+                "reasoning": {
+                    "type": "string",
+                    "description": "1-2 sentence explanation of the trading decision.",
+                },
+            },
+            "required": ["side", "confidence", "reasoning"],
+        },
+    },
+]
+
+# OpenAI wraps the same schema in a "function" envelope
+_OPENAI_TOOLS: list[dict[str, Any]] = [
+    {
+        "type": "function",
+        "function": {
+            "name": t["name"],
+            "description": t["description"],
+            "parameters": t["input_schema"],
+        },
+    }
+    for t in _TOOLS
+]
+
+_INITIAL_MESSAGE = (
+    "You are a quantitative trading analyst making a real-time trading decision.\n\n"
+    "Symbol: {symbol}\n\n"
+    "Use the available tools to fetch the market data you need — candle history, "
+    "technical indicators, and volatility analysis. Reason step-by-step about trend "
+    "direction (EMA cross, MACD), momentum (RSI, return z-score), and volume "
+    "confirmation. When you have enough information, call emit_signal with your "
+    "final BUY, SELL, or HOLD decision."
+)
 
 
 class LLMSignalSource(BaseSignalSource):
-    """Signal source backed by an LLM API (Anthropic Claude or OpenAI GPT)."""
+    """Agentic signal source driven by Claude's tool_use API (or OpenAI function calling)."""
 
     def __init__(self) -> None:
         self._provider: str      = LLM_PROVIDER
@@ -71,9 +191,9 @@ class LLMSignalSource(BaseSignalSource):
         candles: list[Candle],
         features: pd.DataFrame,
     ) -> TradeSignal:
-        """Call the LLM and parse its JSON response into a TradeSignal.
+        """Run the agentic tool-use loop and return a TradeSignal.
 
-        Falls back to a low-confidence HOLD on any API or parsing failure.
+        Falls back to a low-confidence HOLD on any failure.
         """
         if self._client is None:
             _logger.warning(
@@ -82,20 +202,18 @@ class LLMSignalSource(BaseSignalSource):
             )
             return self._make_hold_signal(symbol)
 
-        prompt = self._build_prompt(symbol, candles, features)
-
         try:
-            raw_text = self._call_with_retry(prompt)
+            if self._provider == "anthropic":
+                return self._run_anthropic_loop(symbol, candles, features)
+            return self._run_openai_loop(symbol, candles, features)
         except Exception as exc:
             _logger.error(
-                "LLM API call failed after retries — returning HOLD fallback.",
+                "Agent loop raised unexpected error — HOLD fallback.",
                 extra={"symbol": symbol, "error": str(exc)},
             )
             return self._make_hold_signal(symbol)
 
-        return self._parse_response(symbol, raw_text)
-
-    # ── Private: warmup helpers ───────────────────────────────────────────────
+    # ── Warmup helpers ────────────────────────────────────────────────────────
 
     def _warmup_anthropic(self) -> None:
         key = os.getenv("ANTHROPIC_API_KEY")
@@ -129,146 +247,277 @@ class LLMSignalSource(BaseSignalSource):
         except ImportError:
             _logger.warning("openai package not installed — LLM source disabled.")
 
-    # ── Private: prompt builder ───────────────────────────────────────────────
+    # ── Anthropic agentic loop ────────────────────────────────────────────────
 
-    def _build_prompt(
+    def _run_anthropic_loop(
         self,
         symbol: str,
         candles: list[Candle],
         features: pd.DataFrame,
-    ) -> str:
-        """Build the analysis prompt sent to the LLM."""
-        window = candles[-LLM_CANDLE_WINDOW:]
-        candle_rows = "\n".join(
-            f"| {i + 1} "
-            f"| {c.open:.2f} "
-            f"| {c.high:.2f} "
-            f"| {c.low:.2f} "
-            f"| {c.close:.2f} "
-            f"| {c.volume:.3f} |"
-            for i, c in enumerate(window)
+    ) -> TradeSignal:
+        """ReAct tool-use loop using Anthropic's messages API."""
+        messages: list[dict[str, Any]] = [
+            {"role": "user", "content": _INITIAL_MESSAGE.format(symbol=symbol)},
+        ]
+
+        for iteration in range(LLM_MAX_LOOP_ITERATIONS):
+            try:
+                response = self._call_with_retry(
+                    lambda: self._call_anthropic(messages)
+                )
+            except Exception as exc:
+                _logger.error(
+                    "Anthropic API error — HOLD fallback.",
+                    extra={"symbol": symbol, "error": str(exc), "iteration": iteration},
+                )
+                return self._make_hold_signal(symbol)
+
+            emit_block = None
+            other_blocks: list[Any] = []
+            for block in response.content:
+                if getattr(block, "type", None) == "tool_use":
+                    if block.name == "emit_signal":
+                        emit_block = block
+                    else:
+                        other_blocks.append(block)
+
+            if emit_block is not None:
+                _logger.info(
+                    "Agent emitted signal.",
+                    extra={"symbol": symbol, "iterations": iteration + 1},
+                )
+                return self._signal_from_emit(symbol, emit_block.input)
+
+            if response.stop_reason != "tool_use" or not other_blocks:
+                _logger.warning(
+                    "Agent stopped without emit_signal — HOLD fallback.",
+                    extra={"symbol": symbol, "stop_reason": response.stop_reason},
+                )
+                return self._make_hold_signal(symbol)
+
+            messages.append({"role": "assistant", "content": response.content})
+            messages.append({
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": self._execute_tool(block.name, block.input, candles, features),
+                    }
+                    for block in other_blocks
+                ],
+            })
+
+        _logger.warning(
+            "Agent loop exceeded max iterations — HOLD fallback.",
+            extra={"symbol": symbol},
         )
+        return self._make_hold_signal(symbol)
 
-        latest = features[FEATURE_COLS].tail(1).iloc[0]
+    def _call_anthropic(self, messages: list[dict[str, Any]]) -> Any:
+        """Build and dispatch a single Anthropic messages.create call."""
+        kwargs: dict[str, Any] = {
+            "model":      self._model,
+            "max_tokens": LLM_MAX_TOKENS,
+            "tools":      _TOOLS,
+            "messages":   messages,
+        }
+        if "opus" in self._model:
+            kwargs["thinking"] = {"type": "adaptive"}
+        return self._client.messages.create(**kwargs)  # type: ignore[union-attr]
 
-        return (
-            f"You are a quantitative trading analyst. Analyze the following market data "
-            f"for {symbol} and generate a trade signal. "
-            f"Respond ONLY with valid JSON — no markdown, no explanation outside the JSON.\n\n"
-            f"## Recent Candles (last {len(window)} × 5-minute bars, oldest first)\n\n"
-            f"| # | Open | High | Low | Close | Volume |\n"
-            f"|---|------|------|-----|-------|--------|\n"
-            f"{candle_rows}\n\n"
-            f"## Latest Technical Indicators (computed on full {len(candles)} candle history)\n\n"
-            f"| Indicator       | Value      |\n"
-            f"|-----------------|------------|\n"
-            f"| EMA Cross       | {latest['ema_cross']:.4f} |\n"
-            f"| RSI (14)        | {latest['rsi_14']:.2f} |\n"
-            f"| MACD            | {latest['macd']:.4f} |\n"
-            f"| MACD Signal     | {latest['macd_signal']:.4f} |\n"
-            f"| MACD Histogram  | {latest['macd_hist']:.4f} |\n"
-            f"| 1-Bar Return    | {latest['return_1']:.4f} |\n"
-            f"| 3-Bar Return    | {latest['return_3']:.4f} |\n"
-            f"| Volatility (21) | {latest['volatility_21']:.6f} |\n"
-            f"| Return Z-Score  | {latest['return_z']:.2f} |\n"
-            f"| Volume Ratio    | {latest['volume_ratio']:.2f} |\n"
-            f"| H-L Range       | {latest['hl_range']:.4f} |\n\n"
-            f"## Instructions\n\n"
-            f"Based on the above data, determine whether to BUY, SELL, or HOLD {symbol}.\n"
-            f"Consider trend direction (EMA cross, MACD), momentum (RSI, return z-score), "
-            f"and volume confirmation (volume ratio).\n\n"
-            f"Respond with exactly this JSON structure:\n"
-            f'{{"side": "BUY" | "SELL" | "HOLD", '
-            f'"confidence": <float 0.0 to 1.0>, '
-            f'"reasoning": "<one sentence explanation>"}}\n\n'
-            f"Rules:\n"
-            f"- confidence >= 0.7 means high conviction; < 0.5 should be HOLD\n"
-            f"- If signals are mixed or ambiguous, prefer HOLD with confidence 0.4-0.5\n"
-            f"- Do not output anything except the JSON object"
+    # ── OpenAI agentic loop ───────────────────────────────────────────────────
+
+    def _run_openai_loop(
+        self,
+        symbol: str,
+        candles: list[Candle],
+        features: pd.DataFrame,
+    ) -> TradeSignal:
+        """Function-calling loop using OpenAI's chat completions API."""
+        messages: list[dict[str, Any]] = [
+            {"role": "user", "content": _INITIAL_MESSAGE.format(symbol=symbol)},
+        ]
+
+        for iteration in range(LLM_MAX_LOOP_ITERATIONS):
+            try:
+                response = self._call_with_retry(
+                    lambda: self._client.chat.completions.create(  # type: ignore[union-attr]
+                        model=self._model,
+                        max_tokens=LLM_MAX_TOKENS,
+                        tools=_OPENAI_TOOLS,
+                        tool_choice="auto",
+                        messages=messages,
+                    )
+                )
+            except Exception as exc:
+                _logger.error(
+                    "OpenAI API error — HOLD fallback.",
+                    extra={"symbol": symbol, "error": str(exc), "iteration": iteration},
+                )
+                return self._make_hold_signal(symbol)
+
+            msg = response.choices[0].message
+            tool_calls = msg.tool_calls or []
+
+            emit_call = None
+            other_calls: list[Any] = []
+            for tc in tool_calls:
+                if tc.function.name == "emit_signal":
+                    emit_call = tc
+                else:
+                    other_calls.append(tc)
+
+            if emit_call is not None:
+                _logger.info(
+                    "Agent emitted signal.",
+                    extra={"symbol": symbol, "iterations": iteration + 1},
+                )
+                return self._signal_from_emit(symbol, json.loads(emit_call.function.arguments))
+
+            if not tool_calls:
+                _logger.warning(
+                    "Agent stopped without emit_signal — HOLD fallback.",
+                    extra={"symbol": symbol},
+                )
+                return self._make_hold_signal(symbol)
+
+            messages.append({
+                "role": "assistant",
+                "content": msg.content,
+                "tool_calls": [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                    }
+                    for tc in tool_calls
+                ],
+            })
+            for tc in other_calls:
+                result = self._execute_tool(
+                    tc.function.name,
+                    json.loads(tc.function.arguments),
+                    candles,
+                    features,
+                )
+                messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+
+        _logger.warning(
+            "Agent loop exceeded max iterations — HOLD fallback.",
+            extra={"symbol": symbol},
         )
+        return self._make_hold_signal(symbol)
 
-    # ── Private: API call ─────────────────────────────────────────────────────
+    # ── Retry wrapper ─────────────────────────────────────────────────────────
 
-    def _call_with_retry(self, prompt: str) -> str:
-        """Call the LLM API with exponential backoff on rate-limit errors."""
+    def _call_with_retry(self, api_call: Callable[[], Any]) -> Any:
+        """Call api_call() with exponential backoff on RateLimitError."""
         last_exc: Exception | None = None
         for attempt in range(LLM_MAX_RETRIES):
             try:
-                return self._call_provider(prompt)
+                return api_call()
             except Exception as exc:
                 if type(exc).__name__ == "RateLimitError":
                     last_exc = exc
-                    delay = LLM_RETRY_BASE_DELAY * (2**attempt)
+                    delay = LLM_RETRY_BASE_DELAY * (2 ** attempt)
                     _logger.warning(
                         "LLM rate limit — retrying.",
                         extra={"attempt": attempt + 1, "delay_seconds": delay},
                     )
                     time.sleep(delay)
                 else:
-                    raise  # non-retryable; propagate immediately
+                    raise
         raise last_exc or RuntimeError("LLM call failed after all retries.")
 
-    def _call_provider(self, prompt: str) -> str:
-        """Dispatch the API call to the configured provider."""
-        if self._provider == "anthropic":
-            response = self._client.messages.create(  # type: ignore[union-attr]
-                model=self._model,
-                max_tokens=256,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            return str(response.content[0].text)  # type: ignore[union-attr]
-        # openai
-        response = self._client.chat.completions.create(  # type: ignore[union-attr]
-            model=self._model,
-            max_tokens=256,
-            messages=[{"role": "user", "content": prompt}],
+    # ── Tool implementations ──────────────────────────────────────────────────
+
+    def _execute_tool(
+        self,
+        name: str,
+        tool_input: dict[str, Any],
+        candles: list[Candle],
+        features: pd.DataFrame,
+    ) -> str:
+        """Dispatch a tool call and return a JSON string result."""
+        if name == "get_candles":
+            return self._tool_get_candles(tool_input, candles)
+        if name == "get_technical_indicators":
+            return self._tool_get_indicators(features)
+        if name == "analyze_volatility":
+            return self._tool_analyze_volatility(candles)
+        return json.dumps({"error": f"Unknown tool: {name}"})
+
+    def _tool_get_candles(
+        self,
+        tool_input: dict[str, Any],
+        candles: list[Candle],
+    ) -> str:
+        limit = min(int(tool_input.get("limit", LLM_CANDLE_WINDOW)), 100)
+        window = candles[-limit:]
+        return json.dumps([
+            {
+                "open":   round(c.open, 2),
+                "high":   round(c.high, 2),
+                "low":    round(c.low, 2),
+                "close":  round(c.close, 2),
+                "volume": round(c.volume, 4),
+            }
+            for c in window
+        ])
+
+    def _tool_get_indicators(self, features: pd.DataFrame) -> str:
+        latest = features[FEATURE_COLS].tail(1).iloc[0]
+        return json.dumps({
+            "ema_cross":     round(float(latest["ema_cross"]), 4),
+            "rsi_14":        round(float(latest["rsi_14"]), 2),
+            "macd":          round(float(latest["macd"]), 4),
+            "macd_signal":   round(float(latest["macd_signal"]), 4),
+            "macd_hist":     round(float(latest["macd_hist"]), 4),
+            "return_1":      round(float(latest["return_1"]), 4),
+            "return_3":      round(float(latest["return_3"]), 4),
+            "volatility_21": round(float(latest["volatility_21"]), 6),
+            "return_z":      round(float(latest["return_z"]), 2),
+            "volume_ratio":  round(float(latest["volume_ratio"]), 2),
+            "hl_range":      round(float(latest["hl_range"]), 4),
+        })
+
+    def _tool_analyze_volatility(self, candles: list[Candle]) -> str:
+        window = candles[-20:]
+        closes = [c.close for c in window]
+        if len(closes) < 2:
+            return json.dumps({"error": "Insufficient candle data for volatility analysis"})
+        price_mean  = statistics.mean(closes)
+        price_stdev = statistics.stdev(closes)
+        price_range = (max(closes) - min(closes)) / price_mean * 100 if price_mean else 0.0
+        momentum_5  = (
+            (closes[-1] - closes[-5]) / closes[-5] * 100
+            if len(closes) >= 5 and closes[-5]
+            else 0.0
         )
-        return str(response.choices[0].message.content)  # type: ignore[union-attr]
+        return json.dumps({
+            "price_mean":        round(price_mean, 2),
+            "price_stdev":       round(price_stdev, 2),
+            "price_range_pct":   round(price_range, 3),
+            "momentum_5bar_pct": round(momentum_5, 3),
+            "current_close":     closes[-1],
+        })
 
-    # ── Private: response parsing ─────────────────────────────────────────────
+    # ── Signal construction ───────────────────────────────────────────────────
 
-    def _parse_response(self, symbol: str, raw_text: str) -> TradeSignal:
-        """Parse LLM JSON response into a TradeSignal; falls back to HOLD on error."""
-        try:
-            data: dict[str, Any] = json.loads(raw_text.strip())
-        except json.JSONDecodeError:
-            _logger.warning(
-                "LLM returned invalid JSON — using HOLD fallback.",
-                extra={"symbol": symbol, "raw_snippet": raw_text[:120]},
-            )
-            return self._make_hold_signal(symbol)
-
-        side_str   = data.get("side")
-        confidence = data.get("confidence")
-
-        if side_str is None or confidence is None:
-            _logger.warning(
-                "LLM response missing required fields — using HOLD fallback.",
-                extra={"symbol": symbol, "keys_present": list(data.keys())},
-            )
-            return self._make_hold_signal(symbol)
+    def _signal_from_emit(self, symbol: str, tool_input: dict[str, Any]) -> TradeSignal:
+        """Construct a TradeSignal from the emit_signal tool call input."""
+        side_str   = str(tool_input.get("side", "HOLD")).upper()
+        confidence = float(tool_input.get("confidence", 0.1))
 
         if side_str not in ("BUY", "SELL", "HOLD"):
             _logger.warning(
-                "LLM returned unrecognised side value — using HOLD fallback.",
+                "emit_signal has invalid side value — HOLD fallback.",
                 extra={"symbol": symbol, "side": side_str},
             )
             return self._make_hold_signal(symbol)
 
-        if not isinstance(confidence, (int, float)):
-            _logger.warning(
-                "LLM confidence is not a number — using HOLD fallback.",
-                extra={"symbol": symbol, "confidence": confidence},
-            )
-            return self._make_hold_signal(symbol)
-
         clamped = float(max(0.0, min(1.0, confidence)))
-        if clamped != float(confidence):
-            _logger.warning(
-                "LLM confidence out of [0, 1] — clamped.",
-                extra={"symbol": symbol, "original": confidence, "clamped": clamped},
-            )
-
         now = datetime.now(tz=timezone.utc)
         return TradeSignal(
             id           = str(uuid.uuid4()),
