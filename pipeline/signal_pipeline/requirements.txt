@@ -1,0 +1,7 @@
+confluent-kafka==2.3.0
+pydantic==2.6.4
+psycopg2-binary==2.9.9
+lightgbm==4.3.0
+pandas==2.2.1
+numpy==1.26.4
+prometheus-client==0.20.0

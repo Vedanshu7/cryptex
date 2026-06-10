@@ -1,0 +1,76 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.backends.legacy:build"
+
+# ── Ruff (linting + import sorting) ──────────────────────────────────────────
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "N",   # pep8-naming
+    "UP",  # pyupgrade
+    "ANN", # flake8-annotations (type hints)
+    "B",   # flake8-bugbear
+    "SIM", # flake8-simplify
+    "RUF", # ruff-specific
+]
+ignore = [
+    "ANN101", # missing type annotation for self
+    "ANN102", # missing type annotation for cls
+    "ANN204", # missing return type for __init__
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["ANN"]  # test files don't need full annotation coverage
+
+[tool.ruff.lint.isort]
+known-first-party = ["shared"]
+section-order = ["future", "standard-library", "third-party", "first-party", "local-folder"]
+
+# ── Black (formatting) ────────────────────────────────────────────────────────
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+# ── Mypy (type checking) ──────────────────────────────────────────────────────
+[tool.mypy]
+python_version = "3.11"
+strict = true
+disallow_untyped_defs = true
+disallow_any_generics = true
+warn_return_any = true
+warn_unused_ignores = true
+no_implicit_reexport = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["confluent_kafka.*", "airflow.*", "sklearn.*", "psycopg2.*"]
+ignore_missing_imports = true
+
+# ── Pytest ────────────────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["shared/tests", "exchange_connector/tests", "candle_aggregator/tests",
+             "signal_pipeline/tests", "signal_router/tests", "tests"]
+addopts = "--strict-markers -q"
+markers = [
+    "integration: marks tests that require running infrastructure (kafka, postgres)",
+    "unit: marks fast unit tests with no external dependencies",
+]
+
+# ── Coverage ──────────────────────────────────────────────────────────────────
+[tool.coverage.run]
+branch = true
+source = ["shared", "exchange_connector/src", "candle_aggregator/src",
+          "signal_pipeline/src", "signal_router/src"]
+omit = ["*/tests/*", "*/dags/*"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
