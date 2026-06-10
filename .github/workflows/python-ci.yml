@@ -1,0 +1,54 @@
+name: Pipeline CI
+
+on:
+  pull_request:
+    paths: ["pipeline/**"]
+  push:
+    branches: [main]
+    paths: ["pipeline/**"]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pipeline
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dev dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Install shared deps
+        run: pip install pydantic confluent-kafka psycopg2-binary prometheus-client
+
+      - name: Install signal pipeline deps
+        run: pip install scikit-learn pandas numpy
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Format check (ruff format)
+        run: ruff format --check .
+
+      - name: Type check (mypy)
+        run: mypy shared/ exchange_connector/src/ candle_aggregator/src/ signal_router/src/ signal_pipeline/src/
+        continue-on-error: true  # mypy on sklearn/numpy imports can be noisy
+
+      - name: Unit tests
+        run: |
+          PYTHONPATH=${{ github.workspace }}/pipeline \
+          pytest shared/tests/ exchange_connector/tests/ candle_aggregator/tests/ \
+                  signal_pipeline/tests/ signal_router/tests/ \
+            -m "not integration" --cov --cov-report=xml
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          file: pipeline/coverage.xml

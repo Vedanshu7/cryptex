@@ -1,0 +1,40 @@
+name: Engine CI
+
+on:
+  pull_request:
+    paths: ["engine/**"]
+  push:
+    branches: [main]
+    paths: ["engine/**"]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: engine
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build (warnaserror)
+        run: dotnet build --no-restore --warnaserror
+
+      - name: Unit tests
+        run: >
+          dotnet test --no-build
+          --collect:"XPlat Code Coverage"
+          --results-directory ./TestResults
+          --filter "FullyQualifiedName!~IntegrationTests"
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          directory: engine/TestResults

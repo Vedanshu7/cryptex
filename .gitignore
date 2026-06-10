@@ -1,0 +1,72 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+.env
+*.egg
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+*.pyc
+
+# .NET
+bin/
+obj/
+*.user
+*.suo
+.vs/
+.vscode/
+*.csproj.user
+TestResults/
+*.nupkg
+*.snupkg
+nuget.config.local
+
+# Docker
+.docker/
+
+# Environment
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# IDE
+.idea/
+*.iml
+.vscode/
+*.code-workspace
+
+# Logs
+logs/
+*.log
+
+# Airflow
+airflow.db
+airflow.cfg
+airflow-webserver.pid
+standalone_admin_password.txt
+
+# Coverage
+coverage.xml
+*.lcov
+
+# Docs
+CLAUDE.md
+system_guide.md
