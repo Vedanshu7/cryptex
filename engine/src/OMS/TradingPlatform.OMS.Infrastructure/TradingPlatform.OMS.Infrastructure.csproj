@@ -1,0 +1,16 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\TradingPlatform.OMS.Application\TradingPlatform.OMS.Application.csproj" />
+    <ProjectReference Include="..\TradingPlatform.OMS.Domain\TradingPlatform.OMS.Domain.csproj" />
+    <ProjectReference Include="..\..\TradingPlatform.Shared\TradingPlatform.Shared.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" />
+    <PackageReference Include="Confluent.Kafka" />
+    <PackageReference Include="Serilog.AspNetCore" />
+    <PackageReference Include="MediatR" />
+  </ItemGroup>
+</Project>

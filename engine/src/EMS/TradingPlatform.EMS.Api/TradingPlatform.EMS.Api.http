@@ -1,0 +1,6 @@
+@TradingPlatform.EMS.Api_HostAddress = http://localhost:5278
+
+GET {{TradingPlatform.EMS.Api_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

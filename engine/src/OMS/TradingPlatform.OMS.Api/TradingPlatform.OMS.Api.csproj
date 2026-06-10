@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <!-- App entry point — inherits global settings from Directory.Build.props. -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" />
+    <PackageReference Include="Serilog.AspNetCore" />
+    <PackageReference Include="Serilog.Sinks.Console" />
+    <PackageReference Include="Serilog.Sinks.Elasticsearch" />
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" />
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.AspNetCore" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.EntityFrameworkCore" />
+    <PackageReference Include="prometheus-net.AspNetCore" />
+    <PackageReference Include="MediatR" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TradingPlatform.OMS.Application\TradingPlatform.OMS.Application.csproj" />
+    <ProjectReference Include="..\TradingPlatform.OMS.Infrastructure\TradingPlatform.OMS.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\TradingPlatform.Shared\TradingPlatform.Shared.csproj" />
+  </ItemGroup>
+
+</Project>

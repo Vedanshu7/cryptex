@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\TradingPlatform.EMS.Application\TradingPlatform.EMS.Application.csproj" />
+    <ProjectReference Include="..\TradingPlatform.EMS.Domain\TradingPlatform.EMS.Domain.csproj" />
+    <ProjectReference Include="..\..\TradingPlatform.Shared\TradingPlatform.Shared.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" />
+    <PackageReference Include="Confluent.Kafka" />
+    <PackageReference Include="Microsoft.Extensions.Http" />
+    <PackageReference Include="MediatR" />
+    <PackageReference Include="Microsoft.Extensions.Options" />
+    <PackageReference Include="Npgsql" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" />
+  </ItemGroup>
+</Project>

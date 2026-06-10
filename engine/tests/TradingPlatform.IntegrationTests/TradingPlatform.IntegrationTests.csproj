@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="Moq" />
+    <PackageReference Include="FluentAssertions" />
+    <PackageReference Include="Testcontainers" />
+    <PackageReference Include="Testcontainers.Kafka" />
+    <PackageReference Include="Testcontainers.PostgreSql" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\OMS\TradingPlatform.OMS.Infrastructure\TradingPlatform.OMS.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\OMS\TradingPlatform.OMS.Application\TradingPlatform.OMS.Application.csproj" />
+    <ProjectReference Include="..\..\src\EMS\TradingPlatform.EMS.Infrastructure\TradingPlatform.EMS.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\EMS\TradingPlatform.EMS.Application\TradingPlatform.EMS.Application.csproj" />
+  </ItemGroup>
+
+</Project>

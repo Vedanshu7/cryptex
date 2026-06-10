@@ -1,0 +1,12 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\TradingPlatform.EMS.Domain\TradingPlatform.EMS.Domain.csproj" />
+    <ProjectReference Include="..\..\TradingPlatform.Shared\TradingPlatform.Shared.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MediatR" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions"  />
+  </ItemGroup>
+</Project>

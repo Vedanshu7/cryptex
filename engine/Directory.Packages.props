@@ -1,0 +1,60 @@
+<Project>
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+
+  <ItemGroup Label="ASP.NET Core">
+    <PackageVersion Include="Microsoft.AspNetCore.OpenApi"              Version="8.0.3" />
+  </ItemGroup>
+
+  <ItemGroup Label="Entity Framework Core">
+    <PackageVersion Include="Microsoft.EntityFrameworkCore"             Version="8.0.3" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.Design"      Version="8.0.3" />
+    <PackageVersion Include="Npgsql.EntityFrameworkCore.PostgreSQL"     Version="8.0.4" />
+    <PackageVersion Include="Npgsql"                                       Version="8.0.4" />
+  </ItemGroup>
+
+  <ItemGroup Label="MediatR">
+    <PackageVersion Include="MediatR"                                   Version="12.2.0" />
+    <PackageVersion Include="MediatR.Extensions.Microsoft.DependencyInjection" Version="11.1.0" />
+  </ItemGroup>
+
+  <ItemGroup Label="Kafka">
+    <PackageVersion Include="Confluent.Kafka"                          Version="2.3.0" />
+  </ItemGroup>
+
+  <ItemGroup Label="Logging">
+    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.1" />
+  </ItemGroup>
+
+  <ItemGroup Label="Observability">
+    <PackageVersion Include="Serilog.AspNetCore"                        Version="8.0.0" />
+    <PackageVersion Include="Serilog.Sinks.Console"                     Version="5.0.1" />
+    <PackageVersion Include="Serilog.Sinks.Elasticsearch"               Version="10.0.0" />
+    <!-- OpenTelemetry.Extensions.Hosting is the correct package for AddOpenTelemetry() DI. -->
+    <PackageVersion Include="OpenTelemetry.Extensions.Hosting"          Version="1.9.0" />
+    <PackageVersion Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.9.0" />
+    <PackageVersion Include="OpenTelemetry.Instrumentation.AspNetCore"  Version="1.9.0" />
+    <PackageVersion Include="OpenTelemetry.Instrumentation.EntityFrameworkCore" Version="1.0.0-beta.12" />
+    <PackageVersion Include="prometheus-net.AspNetCore"                 Version="8.2.1" />
+  </ItemGroup>
+
+  <ItemGroup Label="Testing">
+    <PackageVersion Include="Microsoft.NET.Test.Sdk"                   Version="17.9.0" />
+    <PackageVersion Include="xunit"                                     Version="2.7.0" />
+    <PackageVersion Include="xunit.runner.visualstudio"                Version="2.5.7" />
+    <PackageVersion Include="Moq"                                       Version="4.20.70" />
+    <PackageVersion Include="FluentAssertions"                          Version="6.12.0" />
+    <PackageVersion Include="Testcontainers"                            Version="3.7.0" />
+    <PackageVersion Include="Testcontainers.Kafka"                      Version="3.7.0" />
+    <PackageVersion Include="Testcontainers.PostgreSql"                 Version="3.7.0" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.InMemory"    Version="8.0.3" />
+    <PackageVersion Include="coverlet.collector"                        Version="6.0.1" />
+  </ItemGroup>
+
+  <ItemGroup Label="HTTP">
+    <PackageVersion Include="Microsoft.Extensions.Http"                 Version="8.0.0" />
+    <PackageVersion Include="Microsoft.Extensions.Options"             Version="8.0.2" />
+    <PackageVersion Include="Microsoft.Extensions.Hosting.Abstractions" Version="8.0.0" />
+  </ItemGroup>
+</Project>

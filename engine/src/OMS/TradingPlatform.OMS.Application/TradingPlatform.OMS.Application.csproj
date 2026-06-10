@@ -1,0 +1,13 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\TradingPlatform.OMS.Domain\TradingPlatform.OMS.Domain.csproj" />
+    <!-- IKafkaProducer is a messaging port — Application depends on the interface only. -->
+    <ProjectReference Include="..\..\TradingPlatform.Shared\TradingPlatform.Shared.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MediatR" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions"  />
+  </ItemGroup>
+</Project>
