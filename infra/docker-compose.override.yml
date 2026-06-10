@@ -1,0 +1,14 @@
+# Local development overrides — not for production.
+# Mounts source directories for faster iteration without rebuilding images.
+version: "3.9"
+
+services:
+  oms:
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      DOTNET_USE_POLLING_FILE_WATCHER: "true"
+
+  ems:
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      DOTNET_USE_POLLING_FILE_WATCHER: "true"
