@@ -1,9 +1,11 @@
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Moq;
 using TradingPlatform.Common.Kafka;
 using TradingPlatform.OMS.Application.Commands;
 using TradingPlatform.OMS.Application.Handlers;
+using TradingPlatform.OMS.Application.Settings;
 using TradingPlatform.OMS.Domain.Entities;
 using TradingPlatform.OMS.Domain.Interfaces;
 
@@ -20,7 +22,8 @@ public sealed class PlaceOrderHandlerTests
             _orderRepository.Object,
             _riskService.Object,
             _kafkaProducer.Object,
-            NullLogger<PlaceOrderHandler>.Instance);
+            NullLogger<PlaceOrderHandler>.Instance,
+            Options.Create(new OmsTopicSettings()));
 
     [Fact]
     public async Task Handle_RiskPass_SavesOrderAndPublishesToKafka()

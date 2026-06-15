@@ -4,17 +4,20 @@ using MediatR;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using TradingPlatform.Common.Kafka;
 using TradingPlatform.OMS.Application.Commands;
+using TradingPlatform.OMS.Application.Settings;
 using TradingPlatform.OMS.Domain.Entities;
 using TradingPlatform.OMS.Infrastructure.Persistence;
 
 namespace TradingPlatform.OMS.Infrastructure.Kafka;
 
 /// <summary>
-/// Background service that consumes order-fills from Kafka and dispatches
+/// Background service that consumes fill events from Kafka and dispatches
 /// <see cref="UpdateOrderStatusCommand"/> to update order status and positions.
-/// This closes the execution loop: EMS fills → OMS state update.
+/// The topic is set via OMS__Topics__FillsTopic — each regional OMS instance
+/// reads from its own fills topic (e.g. tokyo.order-fills).
 /// </summary>
 public sealed partial class OrderFillsConsumerService : BackgroundService
 {
@@ -31,12 +34,15 @@ public sealed partial class OrderFillsConsumerService : BackgroundService
     public OrderFillsConsumerService(
         IServiceScopeFactory scopeFactory,
         ILogger<OrderFillsConsumerService> logger,
-        IKafkaConsumerFactory consumerFactory)
+        IKafkaConsumerFactory consumerFactory,
+        IOptions<OmsTopicSettings> topics)
     {
         ArgumentNullException.ThrowIfNull(consumerFactory);
+        ArgumentNullException.ThrowIfNull(topics);
         _scopeFactory = scopeFactory;
         _logger       = logger;
-        _consumer     = consumerFactory.Create("oms-fills-consumer", ["order-fills"]);
+        string fillsTopic = topics.Value.FillsTopic;
+        _consumer = consumerFactory.Create($"oms-fills-{fillsTopic}", [fillsTopic]);
     }
 
     /// <inheritdoc/>

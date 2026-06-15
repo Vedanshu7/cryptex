@@ -144,7 +144,57 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
 
   # ── Engine (C# .NET 8) ───────────────────────────────────────────────────────
+  # Regional deployment pattern: same Docker image, different OMS__Topics__* env vars.
+  # Each OMS/EMS pair is self-contained after the signal router publishes to
+  # the regional order-requests topic — no cross-region Kafka traffic after that point.
+  #
+  # Local dev runs the Tokyo region only (Binance testnet covers all symbols).
+  # To add SGP or EU: copy the tokyo block, change topic prefixes + exchange URLs.
 
+  oms-tokyo:
+    build:
+      context: ../engine
+      dockerfile: src/OMS/TradingPlatform.OMS.Api/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    ports:
+      - "5011:8080"
+    environment:
+      ConnectionStrings__Postgres: Host=postgres;Database=trading;Username=trading;Password=${POSTGRES_PASSWORD}
+      Kafka__Brokers: kafka:9092
+      OMS__Topics__InputTopic:  tokyo.order-requests
+      OMS__Topics__OutputTopic: tokyo.validated-orders
+      OMS__Topics__FillsTopic:  tokyo.order-fills
+      Binance__BaseUrl: ${BINANCE_BASE_URL:-https://testnet.binance.vision}
+      Binance__ApiKey: ${BINANCE_API_KEY}
+      Binance__SecretKey: ${BINANCE_SECRET_KEY}
+      ASPNETCORE_ENVIRONMENT: Development
+
+  ems-tokyo:
+    build:
+      context: ../engine
+      dockerfile: src/EMS/TradingPlatform.EMS.Api/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "5012:8080"
+    environment:
+      Kafka__Brokers: kafka:9092
+      EMS__Topics__InputTopic:  tokyo.validated-orders
+      EMS__Topics__OutputTopic: tokyo.order-fills
+      Binance__BaseUrl: ${BINANCE_BASE_URL:-https://testnet.binance.vision}
+      Binance__ApiKey: ${BINANCE_API_KEY}
+      Binance__SecretKey: ${BINANCE_SECRET_KEY}
+      ASPNETCORE_ENVIRONMENT: Development
+
+  # Legacy single-region services kept for backward compatibility.
+  # These use the default topics (order-requests, validated-orders, order-fills).
   oms:
     build:
       context: ../engine
@@ -160,7 +210,12 @@ services:
     environment:
       ConnectionStrings__Postgres: Host=postgres;Database=trading;Username=trading;Password=${POSTGRES_PASSWORD}
       Kafka__Brokers: kafka:9092
+      Binance__BaseUrl: ${BINANCE_BASE_URL:-https://testnet.binance.vision}
+      Binance__ApiKey: ${BINANCE_API_KEY}
+      Binance__SecretKey: ${BINANCE_SECRET_KEY}
       ASPNETCORE_ENVIRONMENT: Development
+    profiles:
+      - legacy
 
   ems:
     build:
@@ -178,6 +233,8 @@ services:
       Binance__ApiKey: ${BINANCE_API_KEY}
       Binance__SecretKey: ${BINANCE_SECRET_KEY}
       ASPNETCORE_ENVIRONMENT: Development
+    profiles:
+      - legacy
 
   # ── Observability ─────────────────────────────────────────────────────────────
 

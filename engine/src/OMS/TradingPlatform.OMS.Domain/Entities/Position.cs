@@ -21,6 +21,9 @@ public sealed class Position
     /// <summary>Gets the volume-weighted average purchase price.</summary>
     public decimal AvgPrice { get; private set; }
 
+    /// <summary>Gets the cumulative realised P&amp;L from all closed (SELL) fills.</summary>
+    public decimal RealisedPnl { get; private set; }
+
     /// <summary>Gets the UTC timestamp of the last update.</summary>
     public DateTime UpdatedAt { get; private set; }
 
@@ -31,12 +34,13 @@ public sealed class Position
     {
         return new Position
         {
-            Id        = Guid.NewGuid(),
-            TenantId  = tenantId,
-            Symbol    = symbol,
-            Quantity  = 0m,
-            AvgPrice  = 0m,
-            UpdatedAt = DateTime.UtcNow,
+            Id          = Guid.NewGuid(),
+            TenantId    = tenantId,
+            Symbol      = symbol,
+            Quantity    = 0m,
+            AvgPrice    = 0m,
+            RealisedPnl = 0m,
+            UpdatedAt   = DateTime.UtcNow,
         };
     }
 
@@ -55,8 +59,10 @@ public sealed class Position
         }
         else
         {
-            Quantity  = Math.Max(0m, Quantity - quantity);
-            // Average price unchanged on sell — cost basis tracks buy-side only.
+            decimal closedQty = Math.Min(quantity, Quantity);
+            RealisedPnl += (fillPrice - AvgPrice) * closedQty;
+            Quantity     = Math.Max(0m, Quantity - quantity);
+            // AvgPrice unchanged on sell — cost basis tracks buy-side only.
         }
 
         UpdatedAt = DateTime.UtcNow;

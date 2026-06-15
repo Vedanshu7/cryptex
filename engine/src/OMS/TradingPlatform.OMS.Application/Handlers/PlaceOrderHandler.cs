@@ -1,8 +1,11 @@
 using MediatR;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using TradingPlatform.Common.Kafka;
 using TradingPlatform.OMS.Application.Commands;
+using TradingPlatform.OMS.Application.Settings;
 using TradingPlatform.OMS.Domain.Entities;
+using TradingPlatform.OMS.Domain.Exceptions;
 using TradingPlatform.OMS.Domain.Interfaces;
 
 namespace TradingPlatform.OMS.Application.Handlers;
@@ -18,18 +21,22 @@ public sealed partial class PlaceOrderHandler
     private readonly IRiskService _riskService;
     private readonly IKafkaProducer _kafkaProducer;
     private readonly ILogger<PlaceOrderHandler> _logger;
+    private readonly OmsTopicSettings _topics;
 
     /// <summary>Initializes handler with its dependencies.</summary>
     public PlaceOrderHandler(
         IOrderRepository orderRepository,
         IRiskService riskService,
         IKafkaProducer kafkaProducer,
-        ILogger<PlaceOrderHandler> logger)
+        ILogger<PlaceOrderHandler> logger,
+        IOptions<OmsTopicSettings> topics)
     {
+        ArgumentNullException.ThrowIfNull(topics);
         _orderRepository = orderRepository;
         _riskService     = riskService;
         _kafkaProducer   = kafkaProducer;
         _logger          = logger;
+        _topics          = topics.Value;
     }
 
     /// <inheritdoc/>
@@ -69,11 +76,24 @@ public sealed partial class PlaceOrderHandler
 
         order.MarkValidated();
 
-        await _orderRepository.SaveAsync(order, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await _orderRepository.SaveAsync(order, cancellationToken).ConfigureAwait(false);
+        }
+        catch (DuplicateSignalException ex)
+        {
+            LogDuplicateSignal(_logger, ex.SignalId, ex.TenantId);
+            return new PlaceOrderResult
+            {
+                OrderId         = Guid.Empty,
+                Status          = OrderStatus.Rejected,
+                RejectionReason = "duplicate_signal",
+            };
+        }
 
         await _kafkaProducer
             .PublishAsync(
-                topic:  "validated-orders",
+                topic:  _topics.OutputTopic,
                 key:    request.TenantId.ToString(),
                 value:  order,
                 cancellationToken)
@@ -93,4 +113,7 @@ public sealed partial class PlaceOrderHandler
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Order {OrderId} validated for tenant {TenantId}.")]
     private static partial void LogOrderCreated(ILogger logger, Guid orderId, Guid tenantId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Duplicate signal {SignalId} for tenant {TenantId} — order skipped.")]
+    private static partial void LogDuplicateSignal(ILogger logger, string signalId, Guid tenantId);
 }

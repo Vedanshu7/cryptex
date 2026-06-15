@@ -27,5 +27,10 @@ internal sealed class OrderConfiguration : IEntityTypeConfiguration<Order>
         builder.Property(o => o.SignalId).HasColumnName("signal_id").HasMaxLength(100);
         builder.Property(o => o.CreatedAt).HasColumnName("created_at").IsRequired();
         builder.Property(o => o.FilledAt).HasColumnName("filled_at");
+
+        builder.HasIndex(o => new { o.TenantId, o.SignalId })
+               .IsUnique()
+               .HasFilter("signal_id IS NOT NULL")
+               .HasDatabaseName("uq_orders_tenant_signal");
     }
 }

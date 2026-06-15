@@ -62,8 +62,8 @@ class TestSignalRouter:
     def test_fresh_signal_published_per_tenant(self, router: SignalRouter) -> None:
         sig = _signal()
         tenants = [
-            {"tenant_id": "tenant-a", "position_size": 0.01},
-            {"tenant_id": "tenant-b", "position_size": 0.02},
+            {"tenant_id": "tenant-a", "position_size": 0.01, "region": "tokyo"},
+            {"tenant_id": "tenant-b", "position_size": 0.02, "region": "sgp"},
         ]
 
         with patch("signal_router.src.router.get_matching_tenants", return_value=tenants):
@@ -82,10 +82,34 @@ class TestSignalRouter:
 
     def test_order_request_uses_correct_tenant_id(self, router: SignalRouter) -> None:
         sig = _signal(symbol="ETHUSDT")
-        tenants = [{"tenant_id": "tenant-xyz", "position_size": 0.5}]
+        tenants = [{"tenant_id": "tenant-xyz", "position_size": 0.5, "region": "eu"}]
 
         with patch("signal_router.src.router.get_matching_tenants", return_value=tenants):
             router._route_signal(sig)
 
         call_kwargs = router._producer.produce.call_args
         assert call_kwargs.kwargs["key"] == "tenant-xyz"
+
+    def test_routes_to_regional_topic(self, router: SignalRouter) -> None:
+        sig = _signal(symbol="BTCUSDT")
+        tenants = [{"tenant_id": "tenant-tokyo", "position_size": 0.01, "region": "tokyo"}]
+
+        with patch("signal_router.src.router.get_matching_tenants", return_value=tenants):
+            router._route_signal(sig)
+
+        call_kwargs = router._producer.produce.call_args
+        assert call_kwargs.kwargs["topic"] == "tokyo.order-requests"
+
+    def test_different_tenants_route_to_different_regions(self, router: SignalRouter) -> None:
+        sig = _signal(symbol="BTCUSDT")
+        tenants = [
+            {"tenant_id": "tenant-a", "position_size": 0.01, "region": "tokyo"},
+            {"tenant_id": "tenant-b", "position_size": 0.01, "region": "eu"},
+        ]
+
+        with patch("signal_router.src.router.get_matching_tenants", return_value=tenants):
+            router._route_signal(sig)
+
+        calls = router._producer.produce.call_args_list
+        topics_used = {c.kwargs["topic"] for c in calls}
+        assert topics_used == {"tokyo.order-requests", "eu.order-requests"}

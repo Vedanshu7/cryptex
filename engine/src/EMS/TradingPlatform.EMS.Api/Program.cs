@@ -6,6 +6,7 @@ using Serilog;
 using Serilog.Formatting.Json;
 using TradingPlatform.Common.Kafka;
 using TradingPlatform.EMS.Application.Handlers;
+using TradingPlatform.EMS.Application.Settings;
 using TradingPlatform.EMS.Domain.Interfaces;
 using TradingPlatform.EMS.Infrastructure.Exchange;
 using TradingPlatform.EMS.Infrastructure.Kafka;
@@ -37,6 +38,10 @@ builder.Services.AddScoped<IExecutionRepository, ExecutionRepository>();
 // ── MediatR ───────────────────────────────────────────────────────────────────
 builder.Services.AddMediatR(cfg =>
     cfg.RegisterServicesFromAssembly(typeof(ExecuteOrderHandler).Assembly));
+
+// ── Topic config (override per region via EMS__Topics__* env vars) ───────────
+builder.Services.Configure<EmsTopicSettings>(
+    builder.Configuration.GetSection("EMS:Topics"));
 
 // ── Kafka ─────────────────────────────────────────────────────────────────────
 builder.Services.Configure<KafkaSettings>(

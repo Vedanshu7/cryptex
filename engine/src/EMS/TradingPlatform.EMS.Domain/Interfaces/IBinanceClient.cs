@@ -10,11 +10,16 @@ public interface IBinanceClient
     /// <param name="side">BUY or SELL.</param>
     /// <param name="quantity">Order quantity.</param>
     /// <param name="ct">Cancellation token.</param>
+    /// <param name="clientOrderId">
+    /// Optional OMS order ID passed as Binance newClientOrderId.
+    /// Enables reconciliation to query a specific order by our own ID on failover.
+    /// </param>
     /// <returns>The exchange-assigned order ID and actual fill price.</returns>
     Task<BinanceFillResult> PlaceMarketOrderAsync(
         string symbol,
         string side,
         decimal quantity,
+        string? clientOrderId = null,
         CancellationToken ct = default);
 }
 

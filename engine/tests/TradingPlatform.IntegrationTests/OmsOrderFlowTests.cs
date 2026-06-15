@@ -1,11 +1,13 @@
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Moq;
 using Testcontainers.PostgreSql;
 using TradingPlatform.Common.Kafka;
 using TradingPlatform.OMS.Application.Commands;
 using TradingPlatform.OMS.Application.Handlers;
+using TradingPlatform.OMS.Application.Settings;
 using TradingPlatform.OMS.Domain.Entities;
 using TradingPlatform.OMS.Domain.Interfaces;
 using TradingPlatform.OMS.Infrastructure.Persistence;
@@ -88,7 +90,8 @@ public sealed class OmsOrderFlowTests : IAsyncLifetime
 
         PlaceOrderHandler handler = new(
             orderRepo, riskService, kafka.Object,
-            NullLogger<PlaceOrderHandler>.Instance);
+            NullLogger<PlaceOrderHandler>.Instance,
+            Options.Create(new OmsTopicSettings()));
 
         Guid tenantId = Guid.NewGuid();
         PlaceOrderCommand command = new()
@@ -140,7 +143,8 @@ public sealed class OmsOrderFlowTests : IAsyncLifetime
 
         PlaceOrderHandler handler = new(
             orderRepo, riskService.Object, kafka.Object,
-            NullLogger<PlaceOrderHandler>.Instance);
+            NullLogger<PlaceOrderHandler>.Instance,
+            Options.Create(new OmsTopicSettings()));
 
         PlaceOrderCommand command = new()
         {

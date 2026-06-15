@@ -1,9 +1,11 @@
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Moq;
 using TradingPlatform.Common.Kafka;
 using TradingPlatform.EMS.Application.Commands;
 using TradingPlatform.EMS.Application.Handlers;
+using TradingPlatform.EMS.Application.Settings;
 using TradingPlatform.EMS.Domain.Entities;
 using TradingPlatform.EMS.Domain.Interfaces;
 
@@ -20,7 +22,8 @@ public sealed class ExecuteOrderHandlerTests
             _binanceClient.Object,
             _executionRepository.Object,
             _kafkaProducer.Object,
-            NullLogger<ExecuteOrderHandler>.Instance);
+            NullLogger<ExecuteOrderHandler>.Instance,
+            Options.Create(new EmsTopicSettings()));
 
     private static ExecuteOrderCommand ValidCommand() => new()
     {
@@ -37,7 +40,7 @@ public sealed class ExecuteOrderHandlerTests
         _binanceClient
             .Setup(b => b.PlaceMarketOrderAsync(
                 It.IsAny<string>(), It.IsAny<string>(),
-                It.IsAny<decimal>(), It.IsAny<CancellationToken>()))
+                It.IsAny<decimal>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new BinanceFillResult { OrderId = 12345, FillPrice = 50_000m });
 
         ExecuteOrderResult result = await CreateHandler().Handle(ValidCommand(), default);
@@ -65,7 +68,7 @@ public sealed class ExecuteOrderHandlerTests
         _binanceClient
             .Setup(b => b.PlaceMarketOrderAsync(
                 It.IsAny<string>(), It.IsAny<string>(),
-                It.IsAny<decimal>(), It.IsAny<CancellationToken>()))
+                It.IsAny<decimal>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new InvalidOperationException("Insufficient balance."));
 
         ExecuteOrderResult result = await CreateHandler().Handle(ValidCommand(), default);

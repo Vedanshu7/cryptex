@@ -1,7 +1,9 @@
 using MediatR;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using TradingPlatform.Common.Kafka;
 using TradingPlatform.EMS.Application.Commands;
+using TradingPlatform.EMS.Application.Settings;
 using TradingPlatform.EMS.Domain.Entities;
 using TradingPlatform.EMS.Domain.Interfaces;
 
@@ -10,6 +12,8 @@ namespace TradingPlatform.EMS.Application.Handlers;
 /// <summary>
 /// Handles <see cref="ExecuteOrderCommand"/> — submits to Binance, persists the
 /// execution record, and publishes a fill event back to the OMS via Kafka.
+/// The fills topic is set via EMS__Topics__OutputTopic so each regional EMS
+/// publishes to its own fills topic (e.g. tokyo.order-fills).
 /// </summary>
 public sealed partial class ExecuteOrderHandler
     : IRequestHandler<ExecuteOrderCommand, ExecuteOrderResult>
@@ -18,18 +22,22 @@ public sealed partial class ExecuteOrderHandler
     private readonly IExecutionRepository _executionRepository;
     private readonly IKafkaProducer _kafkaProducer;
     private readonly ILogger<ExecuteOrderHandler> _logger;
+    private readonly EmsTopicSettings _topics;
 
     /// <summary>Initializes the handler with its dependencies.</summary>
     public ExecuteOrderHandler(
         IBinanceClient binanceClient,
         IExecutionRepository executionRepository,
         IKafkaProducer kafkaProducer,
-        ILogger<ExecuteOrderHandler> logger)
+        ILogger<ExecuteOrderHandler> logger,
+        IOptions<EmsTopicSettings> topics)
     {
+        ArgumentNullException.ThrowIfNull(topics);
         _binanceClient       = binanceClient;
         _executionRepository = executionRepository;
         _kafkaProducer       = kafkaProducer;
         _logger              = logger;
+        _topics              = topics.Value;
     }
 
     /// <inheritdoc/>
@@ -46,6 +54,7 @@ public sealed partial class ExecuteOrderHandler
                     request.Symbol,
                     request.Side,
                     request.Quantity,
+                    request.OrderId.ToString(),   // newClientOrderId → enables reconciliation lookup
                     cancellationToken)
                 .ConfigureAwait(false);
 
@@ -61,7 +70,7 @@ public sealed partial class ExecuteOrderHandler
 
             await _kafkaProducer
                 .PublishAsync(
-                    topic: "order-fills",
+                    topic: _topics.OutputTopic,
                     key:   request.TenantId.ToString(),
                     value: new OrderFillEvent
                     {

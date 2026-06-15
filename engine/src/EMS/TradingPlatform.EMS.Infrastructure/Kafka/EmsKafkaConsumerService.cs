@@ -4,14 +4,18 @@ using MediatR;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using TradingPlatform.Common.Kafka;
 using TradingPlatform.EMS.Application.Commands;
+using TradingPlatform.EMS.Application.Settings;
 
 namespace TradingPlatform.EMS.Infrastructure.Kafka;
 
 /// <summary>
-/// Background service that consumes validated-orders from Kafka
+/// Background service that consumes validated orders from the configured topic
 /// and dispatches <see cref="ExecuteOrderCommand"/> via MediatR.
+/// The topic is set via EMS__Topics__InputTopic — each regional EMS instance
+/// reads from its own topic (e.g. tokyo.validated-orders).
 /// </summary>
 public sealed partial class EmsKafkaConsumerService : BackgroundService
 {
@@ -28,12 +32,15 @@ public sealed partial class EmsKafkaConsumerService : BackgroundService
     public EmsKafkaConsumerService(
         IServiceScopeFactory scopeFactory,
         ILogger<EmsKafkaConsumerService> logger,
-        IKafkaConsumerFactory consumerFactory)
+        IKafkaConsumerFactory consumerFactory,
+        IOptions<EmsTopicSettings> topics)
     {
         ArgumentNullException.ThrowIfNull(consumerFactory);
+        ArgumentNullException.ThrowIfNull(topics);
         _scopeFactory = scopeFactory;
         _logger       = logger;
-        _consumer     = consumerFactory.Create("ems-consumer", ["validated-orders"]);
+        string inputTopic = topics.Value.InputTopic;
+        _consumer = consumerFactory.Create($"ems-{inputTopic}", [inputTopic]);
     }
 
     /// <inheritdoc/>

@@ -8,9 +8,12 @@ using Serilog.Formatting.Json;
 using TradingPlatform.Common.Kafka;
 using TradingPlatform.OMS.Api.Middleware;
 using TradingPlatform.OMS.Application.Handlers;
+using TradingPlatform.OMS.Application.Settings;
 using TradingPlatform.OMS.Domain.Interfaces;
+using TradingPlatform.OMS.Infrastructure.Exchange;
 using TradingPlatform.OMS.Infrastructure.Kafka;
 using TradingPlatform.OMS.Infrastructure.Persistence;
+using TradingPlatform.OMS.Infrastructure.Reconciliation;
 using TradingPlatform.OMS.Infrastructure.Repositories;
 using TradingPlatform.OMS.Infrastructure.Services;
 
@@ -43,17 +46,37 @@ builder.Services.AddScoped<IOrderRepository, OrderRepository>();
 builder.Services.AddScoped<IPositionRepository, PositionRepository>();
 builder.Services.AddScoped<IRiskService, BasicRiskService>();
 
+// ── Binance account client (reconciliation only) ──────────────────────────────
+builder.Services.Configure<BinanceAccountSettings>(
+    builder.Configuration.GetSection("Binance"));
+builder.Services.AddHttpClient<IBinanceAccountClient, BinanceAccountClient>(
+    (sp, http) =>
+    {
+        BinanceAccountSettings settings = sp
+            .GetRequiredService<Microsoft.Extensions.Options.IOptions<BinanceAccountSettings>>()
+            .Value;
+        http.BaseAddress = settings.BaseUrl;
+    });
+
 // ── MediatR ───────────────────────────────────────────────────────────────────
 builder.Services.AddMediatR(cfg =>
     cfg.RegisterServicesFromAssembly(typeof(PlaceOrderHandler).Assembly));
+
+// ── Topic config (override per region via OMS__Topics__* env vars) ───────────
+builder.Services.Configure<OmsTopicSettings>(
+    builder.Configuration.GetSection("OMS:Topics"));
 
 // ── Kafka ─────────────────────────────────────────────────────────────────────
 builder.Services.Configure<KafkaSettings>(
     builder.Configuration.GetSection("Kafka"));
 builder.Services.AddSingleton<IKafkaProducer, KafkaProducer>();
 builder.Services.AddSingleton<IKafkaConsumerFactory, KafkaConsumerFactory>();
-builder.Services.AddHostedService<KafkaConsumerService>();        // reads order-requests
-builder.Services.AddHostedService<OrderFillsConsumerService>();   // reads order-fills → closes the loop
+// ExchangeReconciliationService runs first (IHostedService.StartAsync blocks until complete)
+// so ghost trades are repaired before Kafka consumers begin processing new messages.
+builder.Services.AddHostedService<ExchangeReconciliationService>();    // repairs ghost trades on startup
+builder.Services.AddHostedService<KafkaConsumerService>();             // reads order-requests
+builder.Services.AddHostedService<OrderFillsConsumerService>();        // reads order-fills → closes the loop
+builder.Services.AddHostedService<StuckOrderReconciliationService>();  // cancels stuck Pending/Validated orders
 
 // ── OpenTelemetry ─────────────────────────────────────────────────────────────
 builder.Services.AddOpenTelemetry()

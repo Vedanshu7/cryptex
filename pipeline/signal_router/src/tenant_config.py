@@ -15,14 +15,14 @@ def get_matching_tenants(symbol: str) -> list[dict[str, object]]:
     is effectively dropped for this cycle.
 
     Returns:
-        List of dicts with keys: tenant_id (str), position_size (float).
+        List of dicts with keys: tenant_id (str), position_size (float), region (str).
     """
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT tenant_id::text, position_size
+                    SELECT tenant_id::text, position_size, region
                     FROM tenant_strategies
                     WHERE symbol = %s
                       AND enabled = TRUE
@@ -38,7 +38,7 @@ def get_matching_tenants(symbol: str) -> list[dict[str, object]]:
         return []
 
     tenants = [
-        {"tenant_id": row[0], "position_size": float(row[1])}
+        {"tenant_id": row[0], "position_size": float(row[1]), "region": row[2]}
         for row in rows
     ]
 

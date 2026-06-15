@@ -26,6 +26,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\OMS\TradingPlatform.OMS.Application\TradingPlatform.OMS.Application.csproj" />
     <ProjectReference Include="..\..\src\OMS\TradingPlatform.OMS.Domain\TradingPlatform.OMS.Domain.csproj" />
+    <ProjectReference Include="..\..\src\OMS\TradingPlatform.OMS.Infrastructure\TradingPlatform.OMS.Infrastructure.csproj" />
   </ItemGroup>
 
 </Project>

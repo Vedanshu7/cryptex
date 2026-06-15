@@ -20,8 +20,13 @@ from .tenant_config import get_matching_tenants
 _logger = get_logger(__name__)
 
 INPUT_TOPIC = "trade-signals"
-OUTPUT_TOPIC = "order-requests"
 CONSUMER_GROUP = "signal-router"
+
+# Topic pattern for regional OMS instances.
+# The signal router is the last central component — after publishing here,
+# all processing (OMS → EMS → exchange) stays within the region.
+def _regional_topic(region: str) -> str:
+    return f"{region}.order-requests"
 
 
 class SignalRouter:
@@ -88,7 +93,7 @@ class SignalRouter:
         signal: TradeSignal,
         tenant: dict[str, object],
     ) -> None:
-        """Build and publish a per-tenant OrderRequest to Kafka."""
+        """Build and publish a per-tenant OrderRequest to the tenant's regional topic."""
         order_request = OrderRequest(
             id=str(uuid.uuid4()),
             tenant_id=str(tenant["tenant_id"]),
@@ -99,8 +104,11 @@ class SignalRouter:
             created_at=datetime.now(tz=timezone.utc),
         )
 
+        region = str(tenant["region"])
+        topic = _regional_topic(region)
+
         self._producer.produce(
-            topic=OUTPUT_TOPIC,
+            topic=topic,
             key=order_request.tenant_id,
             value=order_request.model_dump_json(),
         )
@@ -112,12 +120,14 @@ class SignalRouter:
         ).inc()
 
         _logger.info(
-            "Order request published.",
+            "Order request published to regional topic.",
             extra={
                 "tenant_id": order_request.tenant_id,
                 "symbol": order_request.symbol,
                 "side": order_request.side.value,
                 "quantity": order_request.quantity,
+                "region": region,
+                "topic": topic,
             },
         )
 

@@ -39,6 +39,7 @@ public sealed partial class BinanceClient : IBinanceClient
         string symbol,
         string side,
         decimal quantity,
+        string? clientOrderId = null,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(symbol);
@@ -46,10 +47,14 @@ public sealed partial class BinanceClient : IBinanceClient
 
         long timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
+        string clientIdSegment = clientOrderId is not null
+            ? $"&newClientOrderId={HttpUtility.UrlEncode(clientOrderId)}"
+            : string.Empty;
+
         string queryString = string.Create(
             System.Globalization.CultureInfo.InvariantCulture,
             $"symbol={HttpUtility.UrlEncode(symbol)}&side={side.ToUpperInvariant()}" +
-            $"&type=MARKET&quantity={quantity}&timestamp={timestamp}");
+            $"&type=MARKET&quantity={quantity}{clientIdSegment}&timestamp={timestamp}");
 
         string signature = HmacSigner.Sign(queryString, _settings.SecretKey);
         string url = $"/api/v3/order?{queryString}&signature={signature}";

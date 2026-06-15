@@ -12,5 +12,6 @@
     <PackageReference Include="Confluent.Kafka" />
     <PackageReference Include="Serilog.AspNetCore" />
     <PackageReference Include="MediatR" />
+    <PackageReference Include="prometheus-net" />
   </ItemGroup>
 </Project>

@@ -4,16 +4,20 @@ using MediatR;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using TradingPlatform.Common.Kafka;
 using TradingPlatform.OMS.Application.Commands;
+using TradingPlatform.OMS.Application.Settings;
 using TradingPlatform.OMS.Infrastructure.Persistence;
 
 namespace TradingPlatform.OMS.Infrastructure.Kafka;
 
 /// <summary>
-/// Background service that continuously consumes from the order-requests topic
-/// and dispatches <see cref="PlaceOrderCommand"/> via MediatR.
-/// Runs for the lifetime of the application.
+/// Background service that continuously consumes from the configured order-requests
+/// topic and dispatches <see cref="PlaceOrderCommand"/> via MediatR.
+/// The topic is set via OMS__Topics__InputTopic — each regional OMS instance
+/// reads from its own topic (e.g. tokyo.order-requests) so no cross-region
+/// traffic occurs after the signal router publishes.
 /// </summary>
 public sealed partial class KafkaConsumerService : BackgroundService
 {
@@ -31,12 +35,15 @@ public sealed partial class KafkaConsumerService : BackgroundService
     public KafkaConsumerService(
         IServiceScopeFactory scopeFactory,
         ILogger<KafkaConsumerService> logger,
-        IKafkaConsumerFactory consumerFactory)
+        IKafkaConsumerFactory consumerFactory,
+        IOptions<OmsTopicSettings> topics)
     {
         ArgumentNullException.ThrowIfNull(consumerFactory);
+        ArgumentNullException.ThrowIfNull(topics);
         _scopeFactory = scopeFactory;
         _logger       = logger;
-        _consumer     = consumerFactory.Create("oms-consumer", ["order-requests"]);
+        string inputTopic = topics.Value.InputTopic;
+        _consumer = consumerFactory.Create($"oms-{inputTopic}", [inputTopic]);
     }
 
     /// <inheritdoc/>

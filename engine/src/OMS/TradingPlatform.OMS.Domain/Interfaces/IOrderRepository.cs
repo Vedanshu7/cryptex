@@ -16,4 +16,11 @@ public interface IOrderRepository
 
     /// <summary>Updates order status and optional fill details.</summary>
     Task UpdateAsync(Order order, CancellationToken ct = default);
+
+    /// <summary>
+    /// Returns all orders in Pending or Validated status older than
+    /// <paramref name="olderThan"/>, across every tenant.
+    /// Intended for the reconciliation service only — bypasses the tenant query filter.
+    /// </summary>
+    Task<IReadOnlyList<Order>> GetStuckAsync(TimeSpan olderThan, CancellationToken ct = default);
 }

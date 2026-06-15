@@ -19,6 +19,7 @@ internal sealed class PositionConfiguration : IEntityTypeConfiguration<Position>
         builder.Property(p => p.Symbol).HasColumnName("symbol").HasMaxLength(20).IsRequired();
         builder.Property(p => p.Quantity).HasColumnName("quantity").HasPrecision(18, 8).IsRequired();
         builder.Property(p => p.AvgPrice).HasColumnName("avg_price").HasPrecision(18, 8).IsRequired();
+        builder.Property(p => p.RealisedPnl).HasColumnName("realised_pnl").HasPrecision(18, 8).IsRequired();
         builder.Property(p => p.UpdatedAt).HasColumnName("updated_at").IsRequired();
 
         builder.HasIndex(p => new { p.TenantId, p.Symbol }).IsUnique();

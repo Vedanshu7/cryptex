@@ -1,6 +1,8 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Npgsql;
 using TradingPlatform.OMS.Domain.Entities;
+using TradingPlatform.OMS.Domain.Exceptions;
 using TradingPlatform.OMS.Domain.Interfaces;
 using TradingPlatform.OMS.Infrastructure.Persistence;
 
@@ -56,8 +58,19 @@ public sealed partial class OrderRepository : IOrderRepository
     /// <inheritdoc/>
     public async Task SaveAsync(Order order, CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(order);
+
         _context.Orders.Add(order);
-        await _context.SaveChangesAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await _context.SaveChangesAsync(ct).ConfigureAwait(false);
+        }
+        catch (DbUpdateException ex)
+            when (ex.InnerException is PostgresException pg && pg.SqlState == "23505")
+        {
+            // uq_orders_tenant_signal fired — same signal redelivered by Kafka.
+            throw new DuplicateSignalException(order.SignalId ?? string.Empty, order.TenantId);
+        }
     }
 
     /// <inheritdoc/>
@@ -65,6 +78,41 @@ public sealed partial class OrderRepository : IOrderRepository
     {
         _context.Orders.Update(order);
         await _context.SaveChangesAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc/>
+    public async Task<IReadOnlyList<Order>> GetStuckAsync(
+        TimeSpan olderThan,
+        CancellationToken ct = default)
+    {
+        DateTime cutoff = DateTime.UtcNow - olderThan;
+
+        // Open an explicit transaction so SET LOCAL applies to the LINQ query on the
+        // same connection. The system_bypass RLS policy (migration 009) allows this
+        // cross-tenant scan when app.is_system_operation = 'true' is set.
+        Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction tx =
+            await _context.Database.BeginTransactionAsync(ct).ConfigureAwait(false);
+
+        try
+        {
+            await _context.Database
+                .ExecuteSqlRawAsync("SET LOCAL app.is_system_operation = 'true'", ct)
+                .ConfigureAwait(false);
+
+            IReadOnlyList<Order> stuck = await _context.Orders
+                .IgnoreQueryFilters()
+                .Where(o => (o.Status == OrderStatus.Pending || o.Status == OrderStatus.Validated)
+                            && o.CreatedAt < cutoff)
+                .ToListAsync(ct)
+                .ConfigureAwait(false);
+
+            await tx.CommitAsync(ct).ConfigureAwait(false);
+            return stuck;
+        }
+        finally
+        {
+            await tx.DisposeAsync().ConfigureAwait(false);
+        }
     }
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Database error fetching order {OrderId}.")]
