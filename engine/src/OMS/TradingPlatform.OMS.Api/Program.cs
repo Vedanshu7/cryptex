@@ -1,3 +1,4 @@
+using Confluent.Kafka;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
 using OpenTelemetry.Resources;
@@ -6,6 +7,7 @@ using Prometheus;
 using Serilog;
 using Serilog.Formatting.Json;
 using TradingPlatform.Common.Kafka;
+using TradingPlatform.Common.Universe;
 using TradingPlatform.OMS.Api.Middleware;
 using TradingPlatform.OMS.Application.Handlers;
 using TradingPlatform.OMS.Application.Settings;
@@ -66,13 +68,57 @@ builder.Services.AddMediatR(cfg =>
 builder.Services.Configure<OmsTopicSettings>(
     builder.Configuration.GetSection("OMS:Topics"));
 
+// Deriving topic names from Region (rather than requiring all three spelled
+// out) removes a class of typo where OMS and EMS's hand-written topic names
+// for the same region silently drift apart. Also fails fast at startup if
+// Region isn't a real entry in universe.json — better than an OMS quietly
+// consuming from a topic no signal will ever reach. See OmsTopicSettingsDeriver
+// for the (unit-tested) derivation/validation logic itself.
+builder.Services.PostConfigure<OmsTopicSettings>(settings =>
+{
+    if (string.IsNullOrEmpty(settings.Region))
+    {
+        return;
+    }
+
+    string universeFilePath = builder.Configuration["UNIVERSE_FILE"] ?? "universe.json";
+    TradingUniverse universe = TradingUniverse.Load(universeFilePath);
+
+    OmsTopicSettingsDeriver.DeriveFromRegion(settings, universe.Regions.Keys.ToList());
+});
+
 // ── Kafka ─────────────────────────────────────────────────────────────────────
 builder.Services.Configure<KafkaSettings>(
     builder.Configuration.GetSection("Kafka"));
 builder.Services.AddSingleton<IKafkaProducer, KafkaProducer>();
 builder.Services.AddSingleton<IKafkaConsumerFactory, KafkaConsumerFactory>();
-// ExchangeReconciliationService runs first (IHostedService.StartAsync blocks until complete)
-// so ghost trades are repaired before Kafka consumers begin processing new messages.
+
+// ── Kafka topic provisioning ─────────────────────────────────────────────────
+// Lets a new region come up from config alone — no manual create-topics.sh run.
+// Topic-already-exists is treated as success, so this is safe on every restart.
+builder.Services.AddSingleton<IAdminClient>(sp =>
+{
+    KafkaSettings settings = sp
+        .GetRequiredService<Microsoft.Extensions.Options.IOptions<KafkaSettings>>().Value;
+    return new AdminClientBuilder(new AdminClientConfig { BootstrapServers = settings.Brokers }).Build();
+});
+builder.Services.AddSingleton<IKafkaTopicProvisioner, KafkaTopicProvisioner>();
+builder.Services.AddSingleton<IReadOnlyList<TopicSpec>>(sp =>
+{
+    OmsTopicSettings topics = sp
+        .GetRequiredService<Microsoft.Extensions.Options.IOptions<OmsTopicSettings>>().Value;
+    return new List<TopicSpec>
+    {
+        new() { Name = topics.InputTopic },
+        new() { Name = topics.OutputTopic },
+        new() { Name = topics.FillsTopic },
+    };
+});
+
+// IHostedService.StartAsync calls run in registration order, each awaited before
+// the next starts — this is what guarantees topics exist before anything below
+// tries to consume or produce, and ghost trades are repaired before new messages flow.
+builder.Services.AddHostedService<KafkaTopicProvisioningService>();    // creates topics if missing
 builder.Services.AddHostedService<ExchangeReconciliationService>();    // repairs ghost trades on startup
 builder.Services.AddHostedService<KafkaConsumerService>();             // reads order-requests
 builder.Services.AddHostedService<OrderFillsConsumerService>();        // reads order-fills → closes the loop
