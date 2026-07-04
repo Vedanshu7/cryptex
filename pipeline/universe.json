@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "regions": {
+    "tokyo": {"exchange": "binance", "symbols": ["BTCUSDT", "ETHUSDT"]},
+    "sgp": {"exchange": "crypto_com", "symbols": ["BTCUSDT"]},
+    "eu": {"exchange": "deribit", "symbols": ["BTC-PERPETUAL"]}
+  }
+}
