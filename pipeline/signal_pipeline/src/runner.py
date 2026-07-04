@@ -21,8 +21,10 @@ from shared.db_client import get_db_connection
 from shared.exceptions import DatabaseError
 from shared.kafka_client import KafkaClientFactory
 from shared.logger import get_logger
-from shared.metrics import signal_confidence as signal_confidence_metric, start_metrics_server
+from shared.metrics import signal_confidence as signal_confidence_metric
+from shared.metrics import start_metrics_server
 from shared.models import Candle
+from shared.universe import get_universe
 
 from .base import BaseSignalSource
 from .features import build_features
@@ -31,12 +33,11 @@ from .model import MLSignalSource
 
 _logger = get_logger(__name__)
 
-SYMBOLS: list[str]          = os.getenv("TRADE_SYMBOLS", "BTCUSDT,ETHUSDT").upper().split(",")
-SIGNAL_SOURCE: str          = os.getenv("SIGNAL_SOURCE", "ml").lower()
-INTERVAL_SECONDS: int       = int(os.getenv("SIGNAL_INTERVAL_SECONDS", "300"))
-LLM_INTERVAL_SECONDS: int   = int(os.getenv("LLM_SIGNAL_INTERVAL_SECONDS", "900"))
-RETRAIN_HOURS: int          = int(os.getenv("RETRAIN_INTERVAL_HOURS", "24"))
-CANDLE_LOOKBACK: int        = 100
+SIGNAL_SOURCE: str = os.getenv("SIGNAL_SOURCE", "ml").lower()
+INTERVAL_SECONDS: int = int(os.getenv("SIGNAL_INTERVAL_SECONDS", "300"))
+LLM_INTERVAL_SECONDS: int = int(os.getenv("LLM_SIGNAL_INTERVAL_SECONDS", "900"))
+RETRAIN_HOURS: int = int(os.getenv("RETRAIN_INTERVAL_HOURS", "24"))
+CANDLE_LOOKBACK: int = 100
 TRAINING_LOOKBACK_DAYS: int = int(os.getenv("TRAINING_LOOKBACK_DAYS", "30"))
 # 5-min candles × 288/day × N days
 TRAINING_LOOKBACK_CANDLES: int = 288 * TRAINING_LOOKBACK_DAYS
@@ -50,9 +51,7 @@ def _build_sources() -> dict[str, BaseSignalSource]:
     if SIGNAL_SOURCE in ("llm", "both"):
         sources["llm"] = LLMSignalSource()
     if not sources:
-        raise ValueError(
-            f"Unknown SIGNAL_SOURCE={SIGNAL_SOURCE!r}. Use 'ml', 'llm', or 'both'."
-        )
+        raise ValueError(f"Unknown SIGNAL_SOURCE={SIGNAL_SOURCE!r}. Use 'ml', 'llm', or 'both'.")
     _logger.info("Signal sources configured.", extra={"active": list(sources.keys())})
     return sources
 
@@ -62,15 +61,15 @@ async def run() -> None:
     _logger.info(
         "Signal pipeline starting.",
         extra={
-            "symbols":        SYMBOLS,
-            "signal_source":  SIGNAL_SOURCE,
-            "ml_interval_s":  INTERVAL_SECONDS,
+            "symbols": get_universe().all_symbols,
+            "signal_source": SIGNAL_SOURCE,
+            "ml_interval_s": INTERVAL_SECONDS,
             "llm_interval_s": LLM_INTERVAL_SECONDS,
-            "retrain_hours":  RETRAIN_HOURS,
+            "retrain_hours": RETRAIN_HOURS,
         },
     )
 
-    sources  = _build_sources()
+    sources = _build_sources()
     producer = KafkaClientFactory.create_producer("signal-pipeline")
 
     for src in sources.values():
@@ -91,9 +90,14 @@ async def _prediction_loop(
     producer: object,
     interval: int,
 ) -> None:
-    """Publish a signal for each symbol every *interval* seconds."""
+    """Publish a signal for each symbol every *interval* seconds.
+
+    Reads the current universe's symbols on every iteration (cheap — only
+    re-parses the file when its mtime changes) so a widened universe takes
+    effect on the next tick without restarting this service.
+    """
     while True:
-        for symbol in SYMBOLS:
+        for symbol in get_universe().all_symbols:
             _generate_and_publish(symbol, source, producer)
         await asyncio.sleep(interval)
 
@@ -110,11 +114,12 @@ async def _retrain_loop(source: BaseSignalSource) -> None:
 
 def _do_retrain(source: BaseSignalSource) -> None:
     """Fetch training candles for all symbols and call source.retrain()."""
-    _logger.info("Starting scheduled model retrain.",
-                 extra={"lookback_days": TRAINING_LOOKBACK_DAYS})
+    _logger.info(
+        "Starting scheduled model retrain.", extra={"lookback_days": TRAINING_LOOKBACK_DAYS}
+    )
 
     candles_by_symbol: dict[str, list[Candle]] = {}
-    for symbol in SYMBOLS:
+    for symbol in get_universe().all_symbols:
         candles = _fetch_candles(symbol, limit=TRAINING_LOOKBACK_CANDLES)
         if candles:
             candles_by_symbol[symbol] = candles
@@ -162,10 +167,10 @@ def _generate_and_publish(
     _logger.info(
         "Signal published.",
         extra={
-            "symbol":     signal.symbol,
-            "side":       signal.side.value,
+            "symbol": signal.symbol,
+            "side": signal.side.value,
             "confidence": signal.confidence,
-            "source":     signal.source,
+            "source": signal.source,
         },
     )
 
@@ -195,15 +200,15 @@ def _fetch_candles(symbol: str, limit: int) -> list[Candle]:
 
     return [
         Candle(
-            symbol    = row[1],
-            open      = float(row[2]),
-            high      = float(row[3]),
-            low       = float(row[4]),
-            close     = float(row[5]),
-            volume    = float(row[6]),
-            opened_at = row[0],
-            closed_at = row[0],
-            timeframe = row[7],
+            symbol=row[1],
+            open=float(row[2]),
+            high=float(row[3]),
+            low=float(row[4]),
+            close=float(row[5]),
+            volume=float(row[6]),
+            opened_at=row[0],
+            closed_at=row[0],
+            timeframe=row[7],
         )
         for row in reversed(rows)  # oldest first for feature engineering
     ]

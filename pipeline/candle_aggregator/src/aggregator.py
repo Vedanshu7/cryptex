@@ -1,192 +1,174 @@
 """Candle Aggregator — consumes raw ticks and emits OHLCV candles.
 
-Maintains per-symbol tick buffers. When a tick falls outside the current
-window, the buffered ticks are aggregated into a candle and published to
-the market-data-candles topic. The buffer is then reset for the new window.
+Built on Quix Streams' tumbling-window aggregation instead of hand-rolled tick
+buffers. Ticks are keyed by symbol (set by the exchange connector), so the
+window state is naturally partitioned per symbol with no explicit group_by.
+
+Windows use the default "key" closing strategy: a window closes (and the
+candle is emitted) when a later tick for the *same* symbol arrives past the
+window boundary — the same "closes on next tick" semantics the previous
+hand-rolled buffer implementation had.
 """
 
 import os
-from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
+from typing import Any
 
-from confluent_kafka import KafkaError, Message
+from quixstreams import Application
+from quixstreams.dataframe.windows import First, Last, Max, Min, Sum
+from quixstreams.models.timestamps import TimestampType
 
-from shared.exceptions import KafkaPublishError
 from shared.db_client import get_db_connection
-from shared.kafka_client import KafkaClientFactory
 from shared.logger import get_logger
 from shared.metrics import candles_published
-from shared.models import Candle, Tick
+from shared.models import Candle
 
 _logger = get_logger(__name__)
 
 TIMEFRAME_MINUTES: int = int(os.getenv("CANDLE_TIMEFRAME_MINUTES", "5"))
+KAFKA_BROKERS: str = os.getenv("KAFKA_BROKERS", "kafka:9092")
 INPUT_TOPIC = "market-data-raw"
 OUTPUT_TOPIC = "market-data-candles"
 CONSUMER_GROUP = "candle-aggregator"
 
 
-class CandleAggregator:
-    """Aggregates raw ticks into OHLCV candles and publishes them to Kafka."""
+def _build_candle(symbol: str, window: dict[str, Any], timeframe_minutes: int) -> Candle:
+    """Build a Candle from a closed tumbling-window aggregation result.
 
-    def __init__(self) -> None:
-        self._consumer = KafkaClientFactory.create_consumer(
-            group_id=CONSUMER_GROUP,
-            topics=[INPUT_TOPIC],
-        )
-        self._producer = KafkaClientFactory.create_producer("candle-aggregator")
-        self._tick_buffers: dict[str, list[Tick]] = defaultdict(list)
-        self._window_start: dict[str, datetime] = {}
+    Args:
+        symbol: Kafka message key for the window (ticks are keyed by symbol).
+        window: A Quix Streams `.final()` record from a *named multi-aggregation*
+            `.agg(...)` call — the named fields are flat alongside "start"/"end"
+            (e.g. {"start", "end", "open", "high", "low", "close", "volume"}).
+            Note: a *single* unnamed aggregation (e.g. `.sum()`) nests its result
+            under a "value" key instead — that shape does not apply here.
+        timeframe_minutes: Configured candle timeframe, used for the output label.
+    """
+    return Candle(
+        symbol=symbol,
+        open=window["open"],
+        high=window["high"],
+        low=window["low"],
+        close=window["close"],
+        volume=window["volume"],
+        opened_at=datetime.fromtimestamp(window["start"] / 1000, tz=timezone.utc),
+        closed_at=datetime.fromtimestamp(window["end"] / 1000, tz=timezone.utc),
+        timeframe=f"{timeframe_minutes}m",
+    )
 
-    def run(self) -> None:
-        """Consume ticks indefinitely and emit candles when windows close."""
-        _logger.info("Candle aggregator started.", extra={"timeframe": TIMEFRAME_MINUTES})
 
-        while True:
-            msg: Message | None = self._consumer.poll(timeout=1.0)
-
-            if msg is None:
-                continue
-
-            if msg.error():
-                err: KafkaError = msg.error()
-                if err.code() == KafkaError._PARTITION_EOF:
-                    continue
-                _logger.error(
-                    "Kafka consumer error.",
-                    extra={"error": str(err), "topic": INPUT_TOPIC},
-                )
-                continue
-
-            raw_value = msg.value()
-            if raw_value is None:
-                continue
-
-            tick = self._deserialize(raw_value)
-            if tick is not None:
-                self._process_tick(tick)
-
-    def _process_tick(self, tick: Tick) -> None:
-        """Add tick to its symbol buffer and emit a candle if the window closed."""
-        symbol = tick.symbol
-
-        if symbol not in self._window_start:
-            self._window_start[symbol] = _floor_to_window(tick.timestamp, TIMEFRAME_MINUTES)
-
-        window_end = self._window_start[symbol] + timedelta(minutes=TIMEFRAME_MINUTES)
-
-        if tick.timestamp >= window_end:
-            if self._tick_buffers[symbol]:
-                candle = self._build_candle(symbol)
-                self._publish_candle(candle)
-
-            self._tick_buffers[symbol] = []
-            self._window_start[symbol] = _floor_to_window(tick.timestamp, TIMEFRAME_MINUTES)
-
-        self._tick_buffers[symbol].append(tick)
-
-    def _build_candle(self, symbol: str) -> Candle:
-        """Build an OHLCV candle from the current tick buffer for a symbol."""
-        ticks = self._tick_buffers[symbol]
-        prices = [t.price for t in ticks]
-
-        return Candle(
-            symbol=symbol,
-            open=prices[0],
-            high=max(prices),
-            low=min(prices),
-            close=prices[-1],
-            volume=sum(t.volume for t in ticks),
-            opened_at=self._window_start[symbol],
-            closed_at=ticks[-1].timestamp,
-            timeframe=f"{TIMEFRAME_MINUTES}m",
+def _persist_candle(candle: Candle) -> None:
+    """Insert a completed candle into the TimescaleDB candles hypertable."""
+    try:
+        with get_db_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO candles
+                    (time, symbol, open, high, low, close, volume, timeframe)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT DO NOTHING
+                """,
+                (
+                    candle.opened_at,
+                    candle.symbol,
+                    candle.open,
+                    candle.high,
+                    candle.low,
+                    candle.close,
+                    candle.volume,
+                    candle.timeframe,
+                ),
+            )
+    except Exception as exc:
+        # Log but don't crash — Kafka delivery of the candle happens independently.
+        _logger.error(
+            "Failed to persist candle to TimescaleDB.",
+            extra={"symbol": candle.symbol, "error": str(exc)},
         )
 
-    def _publish_candle(self, candle: Candle) -> None:
-        """Publish a completed candle to Kafka and persist to TimescaleDB."""
-        try:
-            self._producer.produce(
-                topic=OUTPUT_TOPIC,
-                key=candle.symbol,
-                value=candle.model_dump_json(),
-            )
-            self._producer.flush()
-            candles_published.labels(symbol=candle.symbol, timeframe=candle.timeframe).inc()
 
-            _logger.info(
-                "Candle published.",
-                extra={
-                    "symbol": candle.symbol,
-                    "open": candle.open,
-                    "close": candle.close,
-                    "volume": candle.volume,
-                    "timeframe": candle.timeframe,
-                },
-            )
-        except Exception as exc:
-            raise KafkaPublishError(
-                f"Failed to publish candle for {candle.symbol}."
-            ) from exc
+def _on_window_closed(
+    window: dict[str, Any],
+    key: str,
+    timestamp_ms: int,
+    headers: list[tuple[str, bytes]] | None,
+) -> dict[str, Any]:
+    """Reshape a closed window into a Candle, persist it, and return its Kafka payload."""
+    candle = _build_candle(symbol=key, window=window, timeframe_minutes=TIMEFRAME_MINUTES)
+    _persist_candle(candle)
 
-        # Persist to TimescaleDB for the signal_pipeline to query.
-        self._persist_candle(candle)
+    candles_published.labels(symbol=candle.symbol, timeframe=candle.timeframe).inc()
+    _logger.info(
+        "Candle published.",
+        extra={
+            "symbol": candle.symbol,
+            "open": candle.open,
+            "close": candle.close,
+            "volume": candle.volume,
+            "timeframe": candle.timeframe,
+        },
+    )
+    return candle.model_dump(mode="json")
 
-    def _persist_candle(self, candle: Candle) -> None:
-        """Insert a completed candle into the TimescaleDB candles hypertable."""
-        try:
-            with get_db_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        """
-                        INSERT INTO candles
-                            (time, symbol, open, high, low, close, volume, timeframe)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                        ON CONFLICT DO NOTHING
-                        """,
-                        (
-                            candle.opened_at,
-                            candle.symbol,
-                            candle.open,
-                            candle.high,
-                            candle.low,
-                            candle.close,
-                            candle.volume,
-                            candle.timeframe,
-                        ),
-                    )
-        except Exception as exc:
-            # Log but don't crash — Kafka delivery already succeeded.
-            _logger.error(
-                "Failed to persist candle to TimescaleDB.",
-                extra={"symbol": candle.symbol, "error": str(exc)},
-            )
 
-    def _deserialize(self, raw: bytes) -> Tick | None:
-        """Deserialize Kafka message bytes into a Tick model.
+def _extract_tick_timestamp(
+    value: dict[str, Any],
+    headers: list[tuple[str, bytes]] | None,
+    timestamp_ms: int,
+    timestamp_type: TimestampType,
+) -> int:
+    """Window by the tick's own event time, not Kafka's produce/broker timestamp.
 
-        Returns None on parse failure so run() can skip and continue rather
-        than crashing the service on a single malformed message.
-        """
-        try:
-            return Tick.model_validate_json(raw)
-        except Exception as exc:
-            _logger.warning(
-                "Failed to deserialize tick — skipping message.",
-                extra={"error": str(exc)},
-            )
-            return None
+    Matches the previous hand-rolled implementation, which floored
+    `tick.timestamp` (from the JSON payload) rather than any Kafka-assigned
+    timestamp — important if ticks are ever replayed or arrive slightly
+    out of order relative to when they were produced.
+    """
+    return int(datetime.fromisoformat(value["timestamp"]).timestamp() * 1000)
+
+
+def build_application() -> Application:
+    """Wire the Quix Streams topology: raw ticks -> tumbling window -> candles."""
+    app = Application(
+        broker_address=KAFKA_BROKERS,
+        consumer_group=CONSUMER_GROUP,
+        auto_offset_reset="latest",
+    )
+
+    input_topic = app.topic(
+        INPUT_TOPIC,
+        key_deserializer="str",
+        value_deserializer="json",
+        timestamp_extractor=_extract_tick_timestamp,
+    )
+    output_topic = app.topic(OUTPUT_TOPIC, key_serializer="str", value_serializer="json")
+
+    sdf = app.dataframe(input_topic)
+    sdf = (
+        sdf.tumbling_window(duration_ms=TIMEFRAME_MINUTES * 60_000)
+        .agg(
+            open=First("price"),
+            high=Max("price"),
+            low=Min("price"),
+            close=Last("price"),
+            volume=Sum("volume"),
+        )
+        .final()
+    )
+    sdf = sdf.apply(_on_window_closed, metadata=True)
+    sdf.to_topic(output_topic, key=lambda candle: candle["symbol"])
+
+    return app
+
+
+def run() -> None:
+    """Start the candle aggregator, consuming indefinitely."""
+    _logger.info("Candle aggregator started.", extra={"timeframe": TIMEFRAME_MINUTES})
+    build_application().run()
 
 
 if __name__ == "__main__":
     from shared.metrics import start_metrics_server
+
     start_metrics_server()
-    CandleAggregator().run()
-
-
-def _floor_to_window(dt: datetime, window_minutes: int) -> datetime:
-    """Floor a datetime to the nearest timeframe window boundary.
-
-    E.g. 09:47 with window=5 → 09:45.
-    """
-    floored_minute = (dt.minute // window_minutes) * window_minutes
-    return dt.replace(minute=floored_minute, second=0, microsecond=0, tzinfo=dt.tzinfo or timezone.utc)
+    run()

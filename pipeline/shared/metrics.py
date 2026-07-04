@@ -7,7 +7,7 @@ Metrics are exposed on port 8000 at GET /metrics.
 import os
 import threading
 
-from prometheus_client import Counter, Histogram, start_http_server
+from prometheus_client import Counter, Gauge, Histogram, start_http_server
 
 _METRICS_PORT = int(os.getenv("METRICS_PORT", "8000"))
 _started = False
@@ -54,6 +54,20 @@ signals_discarded_stale = Counter(
     "signal_router_stale_signals_total",
     "Signals discarded because they had expired.",
     labelnames=["symbol"],
+)
+
+signals_discarded_region_mismatch = Counter(
+    "signal_router_region_mismatch_total",
+    "Order requests skipped because the tenant's region's exchange doesn't list the symbol.",
+    labelnames=["region", "symbol"],
+)
+
+tenant_universe_mismatches = Gauge(
+    "signal_router_tenant_universe_mismatches",
+    "Enabled tenant strategies whose (region, symbol) doesn't match the current "
+    "universe right now — independent of whether a live signal has exercised that "
+    "path. Refreshed periodically; see shared/universe_consistency.py.",
+    labelnames=["reason"],
 )
 
 # ── Signal Pipeline ───────────────────────────────────────────────────────────

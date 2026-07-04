@@ -1,4 +1,10 @@
-confluent-kafka==2.3.0
-pydantic==2.6.4
+confluent-kafka==2.11.1
+quixstreams==3.24.0
+pydantic==2.12.5
+# Pinned below quixstreams' transitive cryptography>=45.0.1 (via confluent_kafka's
+# schema_registry -> authlib -> joserfc chain, unused here but imported eagerly).
+# cryptography>=48.0.0 crashes with SIGILL on linux/arm64 in this environment —
+# verified by bisection; 46.0.2 is the newest version confirmed not to crash.
+cryptography==46.0.2
 psycopg2-binary==2.9.9
 prometheus-client==0.20.0
