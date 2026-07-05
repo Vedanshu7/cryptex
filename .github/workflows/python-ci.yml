@@ -25,11 +25,19 @@ jobs:
       - name: Install dev dependencies
         run: pip install -r requirements-dev.txt
 
-      - name: Install shared deps
-        run: pip install pydantic confluent-kafka psycopg2-binary prometheus-client
-
-      - name: Install signal pipeline deps
-        run: pip install scikit-learn pandas numpy
+      - name: Install service dependencies
+        # Installs each service's own pinned requirements.txt rather than a
+        # hand-curated flat list — the latter drifted stale (missing
+        # quixstreams/websockets) after candle_aggregator and signal_router
+        # migrated to Quix Streams. All four share one venv here (matching
+        # local dev's documented single-venv quality gate), so their pins
+        # must stay mutually compatible — see cryptography/confluent-kafka/
+        # pydantic version notes in candle_aggregator and signal_router's
+        # requirements.txt.
+        run: |
+          for service in exchange_connector candle_aggregator signal_pipeline signal_router; do
+            pip install -r "$service/requirements.txt"
+          done
 
       - name: Lint (ruff)
         run: ruff check .
@@ -40,6 +48,11 @@ jobs:
       - name: Type check (mypy)
         run: mypy shared/ exchange_connector/src/ candle_aggregator/src/ signal_router/src/ signal_pipeline/src/
         continue-on-error: true  # mypy on sklearn/numpy imports can be noisy
+
+      - name: Validate trading universe
+        run: |
+          PYTHONPATH=${{ github.workspace }}/pipeline \
+          python3 ../scripts/validate_universe.py universe.json
 
       - name: Unit tests
         run: |

@@ -9,7 +9,7 @@ PROJECT_ROOT="$(dirname "${SCRIPT_DIR}")"
 
 echo "==> Starting infrastructure..."
 cd "${PROJECT_ROOT}/infra"
-docker compose up -d zookeeper kafka postgres redis
+docker compose up -d kafka postgres redis
 
 echo "==> Waiting for Kafka and Postgres to be ready..."
 until docker compose exec -T kafka kafka-broker-api-versions.sh \
