@@ -90,6 +90,44 @@ public sealed class ExecuteOrderHandlerTests
     }
 
     [Fact]
+    public async Task Handle_BinanceCallTimesOut_ReturnsFailureWithErrorMessage()
+    {
+        _binanceClient
+            .Setup(b => b.PlaceMarketOrderAsync(
+                It.IsAny<string>(), It.IsAny<string>(),
+                It.IsAny<decimal>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new TaskCanceledException("The request timed out."));
+
+        ExecuteOrderResult result = await CreateHandler().Handle(ValidCommand(), CancellationToken.None);
+
+        result.Success.Should().BeFalse();
+        result.ErrorMessage.Should().Contain("timed out");
+
+        _executionRepository.Verify(
+            r => r.SaveAsync(
+                It.Is<Execution>(e => e.Status == ExecutionStatus.Error),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task Handle_CallerCancelsRequest_PropagatesTaskCanceledException()
+    {
+        using CancellationTokenSource cts = new();
+        await cts.CancelAsync();
+
+        _binanceClient
+            .Setup(b => b.PlaceMarketOrderAsync(
+                It.IsAny<string>(), It.IsAny<string>(),
+                It.IsAny<decimal>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new TaskCanceledException("Caller cancelled."));
+
+        Func<Task> act = () => CreateHandler().Handle(ValidCommand(), cts.Token);
+
+        await act.Should().ThrowAsync<TaskCanceledException>();
+    }
+
+    [Fact]
     public async Task Handle_NullCommand_ThrowsArgumentNullException()
     {
         Func<Task> act = () => CreateHandler().Handle(null!, CancellationToken.None);

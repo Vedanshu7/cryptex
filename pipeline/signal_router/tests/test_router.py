@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
+from shared.exceptions import RetryExhaustedError, TenantLookupError
 from shared.models import TradeSide, TradeSignal
 from shared.universe import Universe
 from shared.universe_consistency import TenantUniverseMismatch
@@ -123,6 +124,38 @@ class TestExpandToOrderRequests:
             result = expand_to_order_requests(sig)
 
         assert len(result) == 2
+
+    def test_tenant_lookup_retries_then_succeeds(self, permissive_universe: Universe) -> None:
+        sig = _signal_dict()
+        tenants = [{"tenant_id": "tenant-a", "position_size": 0.01, "region": "tokyo"}]
+
+        with (
+            patch("signal_router.src.router.get_universe", return_value=permissive_universe),
+            patch(
+                "signal_router.src.router.get_matching_tenants",
+                side_effect=[TenantLookupError("db down"), tenants],
+            ),
+            patch("shared.dlq.time.sleep"),
+        ):
+            result = expand_to_order_requests(sig)
+
+        assert len(result) == 1
+
+    def test_tenant_lookup_exhausted_propagates_retry_exhausted(
+        self, permissive_universe: Universe
+    ) -> None:
+        sig = _signal_dict()
+
+        with (
+            patch("signal_router.src.router.get_universe", return_value=permissive_universe),
+            patch(
+                "signal_router.src.router.get_matching_tenants",
+                side_effect=TenantLookupError("db down"),
+            ),
+            patch("shared.dlq.time.sleep"),
+            pytest.raises(RetryExhaustedError),
+        ):
+            expand_to_order_requests(sig)
 
     def test_no_matching_tenants_yields_nothing(self, permissive_universe: Universe) -> None:
         sig = _signal_dict()

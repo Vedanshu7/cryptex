@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Npgsql;
+using TradingPlatform.Common.Exceptions;
 using TradingPlatform.OMS.Domain.Entities;
 using TradingPlatform.OMS.Domain.Exceptions;
 using TradingPlatform.OMS.Domain.Interfaces;
@@ -39,7 +40,7 @@ public sealed partial class OrderRepository : IOrderRepository
         catch (DbUpdateException ex)
         {
             LogQueryError(_logger, id, ex);
-            throw;
+            throw new RetryableProcessingException($"Failed to fetch order {id}.", ex);
         }
     }
 
@@ -71,13 +72,26 @@ public sealed partial class OrderRepository : IOrderRepository
             // uq_orders_tenant_signal fired — same signal redelivered by Kafka.
             throw new DuplicateSignalException(order.SignalId ?? string.Empty, order.TenantId);
         }
+        catch (DbUpdateException ex)
+        {
+            throw new RetryableProcessingException($"Failed to save order {order.Id}.", ex);
+        }
     }
 
     /// <inheritdoc/>
     public async Task UpdateAsync(Order order, CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(order);
+
         _context.Orders.Update(order);
-        await _context.SaveChangesAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await _context.SaveChangesAsync(ct).ConfigureAwait(false);
+        }
+        catch (DbUpdateException ex)
+        {
+            throw new RetryableProcessingException($"Failed to update order {order.Id}.", ex);
+        }
     }
 
     /// <inheritdoc/>

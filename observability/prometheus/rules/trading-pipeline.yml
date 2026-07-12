@@ -1,0 +1,47 @@
+groups:
+  - name: trading-pipeline
+    rules:
+      - alert: NoTicksIngested
+        expr: rate(exchange_connector_ticks_total[5m]) == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No ticks ingested from the exchange in 5m"
+          description: "exchange_connector_ticks_total has stopped increasing — the Binance WS feed may be disconnected."
+
+      - alert: NoCandlesPublished
+        expr: rate(candle_aggregator_candles_total[5m]) == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Candle aggregator has published no candles in 10m"
+          description: "candle_aggregator_candles_total has stopped increasing for symbol={{ $labels.symbol }}, timeframe={{ $labels.timeframe }}."
+
+      - alert: SignalsExpiringBeforeRouting
+        expr: rate(signal_router_stale_signals_total[5m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Signal router is discarding stale signals"
+          description: "Signals for symbol={{ $labels.symbol }} are expiring before reaching the router — check for lag between signal_pipeline and signal_router."
+
+      - alert: RegionSymbolMismatchOccurring
+        expr: rate(signal_router_region_mismatch_total[5m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Order requests skipped due to region/symbol mismatch"
+          description: "region={{ $labels.region }}, symbol={{ $labels.symbol }} isn't listed on that region's exchange — check universe.json."
+
+      - alert: TenantUniverseMismatchDetected
+        expr: signal_router_tenant_universe_mismatches > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} tenant strategies mismatch the current trading universe (reason={{ $labels.reason }})"
+          description: "Enabled tenant strategies whose (region, symbol) doesn't match the live universe — see shared/universe_consistency.py."

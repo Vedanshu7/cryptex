@@ -2,8 +2,17 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+rule_files:
+  - "rules/*.yml"
+
 scrape_configs:
 
+  # Legacy single-region services (behind the "legacy" compose profile).
   - job_name: oms
     static_configs:
       - targets: ["oms:8080"]
@@ -12,6 +21,39 @@ scrape_configs:
   - job_name: ems
     static_configs:
       - targets: ["ems:8080"]
+    metrics_path: /metrics
+
+  # Regional OMS/EMS pairs (on by default — see infra/docker-compose.yml).
+  # Same pipeline_dlq_messages_total / pipeline_retry_attempts_total counters
+  # as the Python services below, via TradingPlatform.Shared's DlqMetrics.
+  - job_name: oms-tokyo
+    static_configs:
+      - targets: ["oms-tokyo:8080"]
+    metrics_path: /metrics
+
+  - job_name: ems-tokyo
+    static_configs:
+      - targets: ["ems-tokyo:8080"]
+    metrics_path: /metrics
+
+  - job_name: oms-sgp
+    static_configs:
+      - targets: ["oms-sgp:8080"]
+    metrics_path: /metrics
+
+  - job_name: ems-sgp
+    static_configs:
+      - targets: ["ems-sgp:8080"]
+    metrics_path: /metrics
+
+  - job_name: oms-eu
+    static_configs:
+      - targets: ["oms-eu:8080"]
+    metrics_path: /metrics
+
+  - job_name: ems-eu
+    static_configs:
+      - targets: ["ems-eu:8080"]
     metrics_path: /metrics
 
   - job_name: exchange-connector
@@ -29,6 +71,17 @@ scrape_configs:
       - targets: ["signal-router:8000"]
     metrics_path: /metrics
 
+  - job_name: signal-generator
+    static_configs:
+      - targets: ["signal-generator:8000"]
+    metrics_path: /metrics
+
   - job_name: kafka
     static_configs:
       - targets: ["kafka:9092"]
+
+  # Bare Redis doesn't expose a Prometheus /metrics endpoint — redis-exporter
+  # (see infra/docker-compose.yml) translates INFO/latency stats for it.
+  - job_name: redis
+    static_configs:
+      - targets: ["redis-exporter:9121"]

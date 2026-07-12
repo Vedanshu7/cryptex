@@ -2,8 +2,10 @@ confluent-kafka==2.11.1
 pydantic==2.12.5
 psycopg2-binary==2.9.9
 lightgbm==4.3.0
+scikit-learn==1.4.1.post1
 pandas==2.2.1
 numpy==1.26.4
 prometheus-client==0.20.0
+redis==5.0.8
 anthropic>=0.25          # LLM signal source (Anthropic Claude); safe to omit if unused
 # openai>=1.0            # Uncomment to enable OpenAI provider

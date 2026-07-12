@@ -16,9 +16,18 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from pydantic import ValidationError
 from quixstreams import Application
 from quixstreams.models.topics import Topic
 
+from shared.dlq import (
+    DlqPublisher,
+    build_dlq_error_handler,
+    build_safe_json_deserializer,
+    call_with_retries,
+)
+from shared.exceptions import RetryExhaustedError, TenantLookupError
+from shared.kafka_client import KafkaClientFactory
 from shared.logger import get_logger
 from shared.metrics import (
     orders_routed,
@@ -34,6 +43,7 @@ from .tenant_config import get_matching_tenants
 
 _logger = get_logger(__name__)
 
+SERVICE_NAME = "signal-router"
 KAFKA_BROKERS: str = os.getenv("KAFKA_BROKERS", "kafka:9092")
 INPUT_TOPIC = "trade-signals"
 CONSUMER_GROUP = "signal-router"
@@ -134,7 +144,13 @@ def expand_to_order_requests(value: dict[str, Any]) -> list[dict[str, Any]]:
         signals_discarded_stale.labels(symbol=signal.symbol).inc()
         return []
 
-    tenants = get_matching_tenants(signal.symbol)
+    tenants = call_with_retries(
+        lambda: get_matching_tenants(signal.symbol),
+        retryable_exceptions=(TenantLookupError,),
+        max_attempts=3,
+        service=SERVICE_NAME,
+        operation="get_matching_tenants",
+    )
     if not tenants:
         _logger.debug("No matching tenants for signal.", extra={"symbol": signal.symbol})
         return []
@@ -146,13 +162,24 @@ def expand_to_order_requests(value: dict[str, Any]) -> list[dict[str, Any]]:
 
 def build_application() -> Application:
     """Wire the Quix Streams topology: trade-signals -> per-tenant order-requests."""
+    dlq = DlqPublisher(KafkaClientFactory.create_producer(f"{SERVICE_NAME}-dlq"))
+    error_handler = build_dlq_error_handler(
+        dlq,
+        safe_exceptions=(RetryExhaustedError, ValidationError),
+        service=SERVICE_NAME,
+    )
+
     app = Application(
         broker_address=KAFKA_BROKERS,
         consumer_group=CONSUMER_GROUP,
         auto_offset_reset="latest",
+        on_processing_error=error_handler,
+        on_producer_error=error_handler,
     )
 
-    input_topic = app.topic(INPUT_TOPIC, value_deserializer="json")
+    input_topic = app.topic(
+        INPUT_TOPIC, value_deserializer=build_safe_json_deserializer(dlq, SERVICE_NAME)
+    )
     regional_topics: dict[str, Topic] = {
         region: app.topic(_regional_topic_name(region), value_serializer="json")
         for region in get_universe().region_names

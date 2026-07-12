@@ -1,0 +1,24 @@
+groups:
+  - name: dlq-and-retries
+    rules:
+      # pipeline_dlq_messages_total is emitted by both stacks under the same
+      # name — Python's shared/metrics.py and C#'s TradingPlatform.Shared
+      # DlqMetrics (incremented from RetryingDlqDispatcher) — so this one rule
+      # covers every consumer in the system without duplicating it per language.
+      - alert: DlqMessagesIncreasing
+        expr: rate(pipeline_dlq_messages_total[10m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.service }} is quarantining messages to a dead-letter topic"
+          description: "{{ $labels.service }} has routed messages from {{ $labels.source_topic }} to its DLQ (error_type={{ $labels.error_type }}) for the last 5 minutes — inspect the DLQ topic for the root cause."
+
+      - alert: RetryRateHigh
+        expr: rate(pipeline_retry_attempts_total[5m]) > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.service }} is retrying {{ $labels.operation }} at a high rate"
+          description: "{{ $labels.service }} has retried {{ $labels.operation }} more than once per second on average over the last 10 minutes — likely a sustained transient failure (DB, exchange, or tenant lookup) rather than a one-off blip."

@@ -78,3 +78,17 @@ signal_confidence = Histogram(
     buckets=[0.5, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1.0],
     labelnames=["symbol", "side"],
 )
+
+# ── Dead-letter queue / retry (shared across services) ────────────────────────
+
+dlq_messages_total = Counter(
+    "pipeline_dlq_messages_total",
+    "Total messages routed to a dead-letter topic.",
+    labelnames=["service", "source_topic", "error_type"],
+)
+
+retry_attempts_total = Counter(
+    "pipeline_retry_attempts_total",
+    "Total retry attempts made after a transient failure.",
+    labelnames=["service", "operation"],
+)

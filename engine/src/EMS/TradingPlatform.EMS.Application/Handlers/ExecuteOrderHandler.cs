@@ -101,6 +101,14 @@ public sealed partial class ExecuteOrderHandler
             return await _HandleErrorAsync(request, ex.Message, cancellationToken)
                 .ConfigureAwait(false);
         }
+        catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            // A request timeout, not caller cancellation — treat the same as
+            // the other known Binance-call failure modes above rather than
+            // letting it crash the consumer.
+            return await _HandleErrorAsync(request, ex.Message, cancellationToken)
+                .ConfigureAwait(false);
+        }
     }
 
     private async Task<ExecuteOrderResult> _HandleErrorAsync(

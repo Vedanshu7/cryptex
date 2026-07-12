@@ -10,7 +10,7 @@ namespace TradingPlatform.Common.Universe;
 /// </summary>
 public sealed record TradingUniverse
 {
-    private static readonly JsonSerializerOptions JsonOptions = new()
+    private static readonly JsonSerializerOptions _jsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
     };
@@ -40,7 +40,7 @@ public sealed record TradingUniverse
         TradingUniverse? universe;
         try
         {
-            universe = JsonSerializer.Deserialize<TradingUniverse>(json, JsonOptions);
+            universe = JsonSerializer.Deserialize<TradingUniverse>(json, _jsonOptions);
         }
         catch (JsonException ex)
         {

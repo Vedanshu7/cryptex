@@ -18,6 +18,7 @@ from candle_aggregator.src.aggregator import (
     _on_window_closed,
     _persist_candle,
 )
+from shared.exceptions import DatabaseError, RetryExhaustedError
 from shared.models import Candle
 
 
@@ -116,10 +117,24 @@ class TestPersistCandle:
 
         mock_conn.cursor.return_value.__enter__.return_value.execute.assert_called_once()
 
-    def test_db_error_is_swallowed_not_raised(self) -> None:
+    def test_db_error_retries_then_raises_retry_exhausted(self) -> None:
+        with (
+            patch("candle_aggregator.src.aggregator.get_db_connection") as mock_get_conn,
+            patch("shared.dlq.time.sleep"),
+        ):
+            mock_get_conn.side_effect = DatabaseError("db unavailable")
+            with pytest.raises(RetryExhaustedError):
+                _persist_candle(self._candle())
+
+        assert mock_get_conn.call_count == 3
+
+    def test_non_database_error_is_not_retried(self) -> None:
         with patch("candle_aggregator.src.aggregator.get_db_connection") as mock_get_conn:
-            mock_get_conn.side_effect = RuntimeError("db unavailable")
-            _persist_candle(self._candle())  # must not raise
+            mock_get_conn.side_effect = RuntimeError("unexpected bug")
+            with pytest.raises(RuntimeError):
+                _persist_candle(self._candle())
+
+        assert mock_get_conn.call_count == 1
 
 
 class TestExtractTickTimestamp:

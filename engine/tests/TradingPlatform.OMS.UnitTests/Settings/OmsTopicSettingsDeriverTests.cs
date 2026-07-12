@@ -17,16 +17,19 @@ public sealed class OmsTopicSettingsDeriverTests
         settings.FillsTopic.Should().Be("order-fills");
     }
 
-    [Fact]
-    public void DeriveFromRegion_RegionSet_DerivesAllThreeTopics()
+    [Theory]
+    [InlineData("tokyo")]
+    [InlineData("sgp")]
+    [InlineData("eu")]
+    public void DeriveFromRegion_RegionSet_DerivesAllThreeTopics(string region)
     {
-        OmsTopicSettings settings = new() { Region = "tokyo" };
+        OmsTopicSettings settings = new() { Region = region };
 
         OmsTopicSettingsDeriver.DeriveFromRegion(settings, ["tokyo", "sgp", "eu"]);
 
-        settings.InputTopic.Should().Be("tokyo.order-requests");
-        settings.OutputTopic.Should().Be("tokyo.validated-orders");
-        settings.FillsTopic.Should().Be("tokyo.order-fills");
+        settings.InputTopic.Should().Be($"{region}.order-requests");
+        settings.OutputTopic.Should().Be($"{region}.validated-orders");
+        settings.FillsTopic.Should().Be($"{region}.order-fills");
     }
 
     [Fact]

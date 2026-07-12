@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using TradingPlatform.Common.Exceptions;
 using TradingPlatform.Common.Kafka;
 using TradingPlatform.OMS.Application.Commands;
 using TradingPlatform.OMS.Application.Settings;
@@ -30,20 +31,24 @@ public sealed partial class KafkaConsumerService : BackgroundService
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<KafkaConsumerService> _logger;
     private readonly IConsumer<string, string> _consumer;
+    private readonly IRetryingDlqDispatcher _dispatcher;
+    private readonly string _inputTopic;
 
     /// <summary>Initializes the background service.</summary>
     public KafkaConsumerService(
         IServiceScopeFactory scopeFactory,
         ILogger<KafkaConsumerService> logger,
         IKafkaConsumerFactory consumerFactory,
+        IRetryingDlqDispatcher dispatcher,
         IOptions<OmsTopicSettings> topics)
     {
         ArgumentNullException.ThrowIfNull(consumerFactory);
         ArgumentNullException.ThrowIfNull(topics);
         _scopeFactory = scopeFactory;
         _logger       = logger;
-        string inputTopic = topics.Value.InputTopic;
-        _consumer = consumerFactory.Create($"oms-{inputTopic}", [inputTopic]);
+        _dispatcher   = dispatcher;
+        _inputTopic   = topics.Value.InputTopic;
+        _consumer = consumerFactory.Create($"oms-{_inputTopic}", [_inputTopic]);
     }
 
     /// <inheritdoc/>
@@ -66,8 +71,12 @@ public sealed partial class KafkaConsumerService : BackgroundService
                             continue;
                         }
 
-                        await _ProcessMessageAsync(result.Message.Value, stoppingToken)
-                            .ConfigureAwait(false);
+                        await _dispatcher.DispatchAsync(
+                            _inputTopic,
+                            result.Message.Key,
+                            result.Message.Value,
+                            ct => _ProcessMessageAsync(result.Message.Value, ct),
+                            stoppingToken).ConfigureAwait(false);
                     }
                     catch (OperationCanceledException)
                     {
@@ -114,8 +123,8 @@ public sealed partial class KafkaConsumerService : BackgroundService
 
         if (command is null)
         {
-            LogDeserializationFailed(_logger, messageValue[..Math.Min(100, messageValue.Length)]);
-            return;
+            throw new NonRetryableProcessingException(
+                $"Deserialized PlaceOrderCommand was null: {messageValue[..Math.Min(100, messageValue.Length)]}.");
         }
 
         // Populate tenant context so TenantDbCommandInterceptor injects
@@ -136,7 +145,4 @@ public sealed partial class KafkaConsumerService : BackgroundService
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Error processing Kafka message in OMS.")]
     private static partial void LogProcessingError(ILogger logger, Exception ex);
-
-    [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to deserialize order-requests message: {Snippet}.")]
-    private static partial void LogDeserializationFailed(ILogger logger, string snippet);
 }

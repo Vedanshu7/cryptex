@@ -15,3 +15,11 @@ class SignalExpiredError(Exception):
 
 class DeserializationError(Exception):
     """Raised when a Kafka message cannot be parsed into the expected model."""
+
+
+class TenantLookupError(Exception):
+    """Raised when tenant matching fails with no cache to fall back on."""
+
+
+class RetryExhaustedError(Exception):
+    """Raised when call_with_retries exhausts its attempts. Wraps the last failure."""

@@ -37,15 +37,16 @@ echo "==> Starting engine services..."
 docker compose up -d signal-generator oms ems
 
 echo "==> Starting observability..."
-docker compose up -d prometheus grafana jaeger
+docker compose up -d prometheus alertmanager grafana jaeger
 
 echo ""
 echo "==> Stack is running:"
-echo "  OMS API:     http://localhost:5001/health"
-echo "  EMS API:     http://localhost:5002/health"
-echo "  Grafana:     http://localhost:3000  (admin/admin)"
-echo "  Jaeger:      http://localhost:16686"
-echo "  Prometheus:  http://localhost:9090"
+echo "  OMS API:      http://localhost:5001/health"
+echo "  EMS API:      http://localhost:5002/health"
+echo "  Grafana:      http://localhost:3000  (admin/admin)"
+echo "  Jaeger:       http://localhost:16686"
+echo "  Prometheus:   http://localhost:9090"
+echo "  Alertmanager: http://localhost:9093"
 echo ""
 echo "Tailing logs (Ctrl+C to stop)..."
 docker compose logs -f oms ems exchange-connector candle-aggregator signal-generator signal-router

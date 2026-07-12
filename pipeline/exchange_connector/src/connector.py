@@ -14,6 +14,8 @@ import os
 import websockets
 import websockets.exceptions
 
+from shared.dlq import DlqPublisher
+from shared.exceptions import KafkaPublishError
 from shared.kafka_client import KafkaClientFactory
 from shared.logger import get_logger
 from shared.models import Tick
@@ -36,6 +38,7 @@ class ExchangeConnector:
     def __init__(self) -> None:
         producer = KafkaClientFactory.create_producer("exchange-connector")
         self._tick_producer = TickProducer(producer)
+        self._dlq = DlqPublisher(KafkaClientFactory.create_producer("exchange-connector-dlq"))
 
     async def run(self) -> None:
         """Start streaming ticks, reconnecting on failure or universe change."""
@@ -99,8 +102,21 @@ class ExchangeConnector:
             return
 
         tick: Tick | None = normalize(data)
-        if tick is not None:
+        if tick is None:
+            return
+
+        try:
             self._tick_producer.publish(tick)
+        except KafkaPublishError as exc:
+            # Delivery failed even after the producer's own retries — quarantine
+            # this tick instead of tearing down the whole WebSocket connection
+            # for one bad message.
+            self._dlq.publish(
+                source_topic="market-data-raw",
+                key=tick.symbol,
+                raw_value=tick.model_dump_json(),
+                error=exc,
+            )
 
     def _build_stream_url(self) -> str:
         """Build a multi-stream WebSocket URL for symbols assigned to Binance.

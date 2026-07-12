@@ -1,15 +1,18 @@
 """Signal pipeline runner.
 
 Concurrent async tasks per active signal source:
-  - ML source  : prediction every SIGNAL_INTERVAL_SECONDS (default 300 s)
-                 + daily retrain loop (RETRAIN_INTERVAL_HOURS)
-  - LLM source : prediction every LLM_SIGNAL_INTERVAL_SECONDS (default 900 s)
-                 (no retrain — the LLM model is managed by the provider)
+  - ML source     : prediction every SIGNAL_INTERVAL_SECONDS (default 300 s)
+                    + daily retrain loop (RETRAIN_INTERVAL_HOURS)
+  - LLM source    : prediction every LLM_SIGNAL_INTERVAL_SECONDS (default 900 s)
+                    (no retrain — the LLM model is managed by the provider)
+  - Kalman source : prediction every KALMAN_SIGNAL_INTERVAL_SECONDS (default
+                    SIGNAL_INTERVAL_SECONDS) (no retrain — genuinely online,
+                    the predict() call itself is the update step)
 
-Select active sources via SIGNAL_SOURCE env var:
-  ml   — LightGBM only (default)
-  llm  — LLM agent only
-  both — both run independently on their own cadences
+Select active sources via SIGNAL_SOURCE env var — a comma-separated list of
+any of "ml", "llm", "kalman" (e.g. SIGNAL_SOURCE=ml,kalman). "both" is kept
+as a backward-compatible alias for "ml,llm" (its meaning before "kalman"
+existed). Default is "ml".
 
 On startup each source's warmup() is called before any prediction loop begins.
 """
@@ -28,30 +31,54 @@ from shared.universe import get_universe
 
 from .base import BaseSignalSource
 from .features import build_features
+from .kalman_source import KalmanSignalSource
 from .llm_source import LLMSignalSource
 from .model import MLSignalSource
 
 _logger = get_logger(__name__)
 
 SIGNAL_SOURCE: str = os.getenv("SIGNAL_SOURCE", "ml").lower()
+
 INTERVAL_SECONDS: int = int(os.getenv("SIGNAL_INTERVAL_SECONDS", "300"))
 LLM_INTERVAL_SECONDS: int = int(os.getenv("LLM_SIGNAL_INTERVAL_SECONDS", "900"))
+KALMAN_INTERVAL_SECONDS: int = int(
+    os.getenv("KALMAN_SIGNAL_INTERVAL_SECONDS", str(INTERVAL_SECONDS))
+)
 RETRAIN_HOURS: int = int(os.getenv("RETRAIN_INTERVAL_HOURS", "24"))
 CANDLE_LOOKBACK: int = 100
 TRAINING_LOOKBACK_DAYS: int = int(os.getenv("TRAINING_LOOKBACK_DAYS", "30"))
 # 5-min candles × 288/day × N days
 TRAINING_LOOKBACK_CANDLES: int = 288 * TRAINING_LOOKBACK_DAYS
 
+_KNOWN_SOURCE_NAMES = {"ml", "llm", "kalman"}
+# "both" predates the "kalman" source and meant "ml"+"llm" — kept as an alias
+# so existing deployments' SIGNAL_SOURCE=both env var keeps working unchanged.
+_SOURCE_ALIASES: dict[str, str] = {"both": "ml,llm"}
+
+
+def _resolve_source_names(raw: str) -> set[str]:
+    """Expand aliases and split a comma-separated SIGNAL_SOURCE value into names."""
+    resolved = _SOURCE_ALIASES.get(raw, raw)
+    return {name.strip() for name in resolved.split(",") if name.strip()}
+
 
 def _build_sources() -> dict[str, BaseSignalSource]:
-    """Instantiate signal sources based on SIGNAL_SOURCE env var."""
+    """Instantiate signal sources based on the SIGNAL_SOURCE env var."""
+    names = _resolve_source_names(SIGNAL_SOURCE)
+    unknown = names - _KNOWN_SOURCE_NAMES
+    if unknown or not names:
+        raise ValueError(
+            f"Unknown SIGNAL_SOURCE={SIGNAL_SOURCE!r}. "
+            f"Use a comma-separated list of {sorted(_KNOWN_SOURCE_NAMES)!r}."
+        )
+
     sources: dict[str, BaseSignalSource] = {}
-    if SIGNAL_SOURCE in ("ml", "both"):
+    if "ml" in names:
         sources["ml"] = MLSignalSource()
-    if SIGNAL_SOURCE in ("llm", "both"):
+    if "llm" in names:
         sources["llm"] = LLMSignalSource()
-    if not sources:
-        raise ValueError(f"Unknown SIGNAL_SOURCE={SIGNAL_SOURCE!r}. Use 'ml', 'llm', or 'both'.")
+    if "kalman" in names:
+        sources["kalman"] = KalmanSignalSource()
     _logger.info("Signal sources configured.", extra={"active": list(sources.keys())})
     return sources
 
@@ -65,6 +92,7 @@ async def run() -> None:
             "signal_source": SIGNAL_SOURCE,
             "ml_interval_s": INTERVAL_SECONDS,
             "llm_interval_s": LLM_INTERVAL_SECONDS,
+            "kalman_interval_s": KALMAN_INTERVAL_SECONDS,
             "retrain_hours": RETRAIN_HOURS,
         },
     )
@@ -81,6 +109,8 @@ async def run() -> None:
         tasks.append(_retrain_loop(sources["ml"]))
     if "llm" in sources:
         tasks.append(_prediction_loop(sources["llm"], producer, LLM_INTERVAL_SECONDS))
+    if "kalman" in sources:
+        tasks.append(_prediction_loop(sources["kalman"], producer, KALMAN_INTERVAL_SECONDS))
 
     await asyncio.gather(*tasks)
 

@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using TradingPlatform.Common.Exceptions;
 using TradingPlatform.OMS.Domain.Entities;
 using TradingPlatform.OMS.Domain.Interfaces;
 using TradingPlatform.OMS.Infrastructure.Persistence;
@@ -46,6 +47,8 @@ public sealed class PositionRepository : IPositionRepository
     /// <inheritdoc/>
     public async Task SaveAsync(Position position, CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(position);
+
         bool exists = await _context.Positions
             .AnyAsync(p => p.Id == position.Id, ct)
             .ConfigureAwait(false);
@@ -59,6 +62,13 @@ public sealed class PositionRepository : IPositionRepository
             _context.Positions.Add(position);
         }
 
-        await _context.SaveChangesAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await _context.SaveChangesAsync(ct).ConfigureAwait(false);
+        }
+        catch (DbUpdateException ex)
+        {
+            throw new RetryableProcessingException($"Failed to save position {position.Id}.", ex);
+        }
     }
 }

@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using TradingPlatform.Common.Exceptions;
 using TradingPlatform.Common.Kafka;
 using TradingPlatform.OMS.Application.Commands;
 using TradingPlatform.OMS.Application.Settings;
@@ -29,20 +30,24 @@ public sealed partial class OrderFillsConsumerService : BackgroundService
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<OrderFillsConsumerService> _logger;
     private readonly IConsumer<string, string> _consumer;
+    private readonly IRetryingDlqDispatcher _dispatcher;
+    private readonly string _fillsTopic;
 
     /// <summary>Initializes the background service.</summary>
     public OrderFillsConsumerService(
         IServiceScopeFactory scopeFactory,
         ILogger<OrderFillsConsumerService> logger,
         IKafkaConsumerFactory consumerFactory,
+        IRetryingDlqDispatcher dispatcher,
         IOptions<OmsTopicSettings> topics)
     {
         ArgumentNullException.ThrowIfNull(consumerFactory);
         ArgumentNullException.ThrowIfNull(topics);
         _scopeFactory = scopeFactory;
         _logger       = logger;
-        string fillsTopic = topics.Value.FillsTopic;
-        _consumer = consumerFactory.Create($"oms-fills-{fillsTopic}", [fillsTopic]);
+        _dispatcher   = dispatcher;
+        _fillsTopic   = topics.Value.FillsTopic;
+        _consumer = consumerFactory.Create($"oms-fills-{_fillsTopic}", [_fillsTopic]);
     }
 
     /// <inheritdoc/>
@@ -65,8 +70,12 @@ public sealed partial class OrderFillsConsumerService : BackgroundService
                             continue;
                         }
 
-                        await _ProcessFillAsync(result.Message.Value, stoppingToken)
-                            .ConfigureAwait(false);
+                        await _dispatcher.DispatchAsync(
+                            _fillsTopic,
+                            result.Message.Key,
+                            result.Message.Value,
+                            ct => _ProcessFillAsync(result.Message.Value, ct),
+                            stoppingToken).ConfigureAwait(false);
                     }
                     catch (OperationCanceledException)
                     {
@@ -108,8 +117,8 @@ public sealed partial class OrderFillsConsumerService : BackgroundService
 
         if (fillEvent is null)
         {
-            LogDeserializationFailed(_logger, messageValue[..Math.Min(100, messageValue.Length)]);
-            return;
+            throw new NonRetryableProcessingException(
+                $"Deserialized OrderFillEvent was null: {messageValue[..Math.Min(100, messageValue.Length)]}.");
         }
 
         using IServiceScope scope = _scopeFactory.CreateScope();
@@ -143,9 +152,6 @@ public sealed partial class OrderFillsConsumerService : BackgroundService
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Error in OMS order-fills consumer.")]
     private static partial void LogError(ILogger logger, Exception ex);
-
-    [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to deserialize order-fills message: {Snippet}.")]
-    private static partial void LogDeserializationFailed(ILogger logger, string snippet);
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Order {OrderId} fill processed at {FillPrice}.")]
     private static partial void LogFillProcessed(ILogger logger, Guid orderId, decimal fillPrice);

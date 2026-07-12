@@ -68,6 +68,11 @@ builder.Services.Configure<KafkaSettings>(
     builder.Configuration.GetSection("Kafka"));
 builder.Services.AddSingleton<IKafkaProducer, KafkaProducer>();
 builder.Services.AddSingleton<IKafkaConsumerFactory, KafkaConsumerFactory>();
+builder.Services.AddSingleton<IDeadLetterPublisher, DeadLetterPublisher>();
+builder.Services.AddSingleton<IRetryingDlqDispatcher>(sp => new RetryingDlqDispatcher(
+    sp.GetRequiredService<IDeadLetterPublisher>(),
+    sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<RetryingDlqDispatcher>>(),
+    serviceName: "ems"));
 
 // ── Kafka topic provisioning ─────────────────────────────────────────────────
 // Lets a new region come up from config alone — no manual create-topics.sh run.
@@ -87,6 +92,7 @@ builder.Services.AddSingleton<IReadOnlyList<TopicSpec>>(sp =>
     {
         new() { Name = topics.InputTopic },
         new() { Name = topics.OutputTopic },
+        new() { Name = $"{topics.InputTopic}.dlq" },
     };
 });
 

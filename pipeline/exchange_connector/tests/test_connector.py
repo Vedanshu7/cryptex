@@ -1,11 +1,13 @@
 """Unit tests for the exchange connector's universe-driven behavior."""
 
 import asyncio
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from exchange_connector.src.connector import ExchangeConnector
+from shared.exceptions import KafkaPublishError
 from shared.universe import Universe
 
 
@@ -50,6 +52,26 @@ class TestBuildStreamUrl:
             url = connector._build_stream_url()
 
         assert "solusdt@trade" in url
+
+
+class TestHandleMessage:
+    def test_publish_failure_routes_to_dlq_instead_of_raising(
+        self, connector: ExchangeConnector
+    ) -> None:
+        raw = json.dumps({"s": "BTCUSDT", "p": "100.0", "q": "1.0", "T": 1_704_102_300_000})
+        connector._tick_producer.publish = MagicMock(  # type: ignore[method-assign]
+            side_effect=KafkaPublishError("delivery failed")
+        )
+        connector._dlq.publish = MagicMock()  # type: ignore[method-assign]
+
+        with patch(
+            "exchange_connector.src.connector.normalize",
+            return_value=MagicMock(symbol="BTCUSDT", model_dump_json=lambda: "{}"),
+        ):
+            connector._handle_message(raw)  # must not raise
+
+        connector._dlq.publish.assert_called_once()
+        assert connector._dlq.publish.call_args.kwargs["source_topic"] == "market-data-raw"
 
 
 class TestWatchForUniverseChange:

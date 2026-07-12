@@ -3,6 +3,7 @@ using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Npgsql;
+using TradingPlatform.Common.Exceptions;
 using TradingPlatform.EMS.Domain.Entities;
 using TradingPlatform.EMS.Domain.Interfaces;
 
@@ -28,39 +29,52 @@ public sealed partial class ExecutionRepository : IExecutionRepository
     }
 
     /// <inheritdoc/>
+    /// <exception cref="RetryableProcessingException">
+    /// The database write failed transiently — safe for a Kafka consumer to
+    /// retry with backoff before quarantining the message.
+    /// </exception>
     public async Task SaveAsync(Execution execution, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(execution);
 
-        NpgsqlConnection conn = new(_connectionString);
-        await using (conn.ConfigureAwait(false))
+        try
         {
-        await conn.OpenAsync(ct).ConfigureAwait(false);
+            NpgsqlConnection conn = new(_connectionString);
+            await using (conn.ConfigureAwait(false))
+            {
+            await conn.OpenAsync(ct).ConfigureAwait(false);
 
-        const string sql = """
-            INSERT INTO executions
-                (id, order_id, tenant_id, exchange_order_id, fill_price, status, error_message, executed_at)
-            VALUES
-                (@id, @orderId, @tenantId, @exchangeOrderId, @fillPrice, @status, @errorMessage, @executedAt)
-            """;
+            const string sql = """
+                INSERT INTO executions
+                    (id, order_id, tenant_id, exchange_order_id, fill_price, status, error_message, executed_at)
+                VALUES
+                    (@id, @orderId, @tenantId, @exchangeOrderId, @fillPrice, @status, @errorMessage, @executedAt)
+                """;
 
-        NpgsqlCommand cmd = new(sql, conn);
-        await using (cmd.ConfigureAwait(false))
+            NpgsqlCommand cmd = new(sql, conn);
+            await using (cmd.ConfigureAwait(false))
+            {
+            cmd.Parameters.AddWithValue("id",              execution.Id);
+            cmd.Parameters.AddWithValue("orderId",         execution.OrderId);
+            cmd.Parameters.AddWithValue("tenantId",        execution.TenantId);
+            cmd.Parameters.AddWithValue("exchangeOrderId", execution.ExchangeOrderId.HasValue
+                ? (object)execution.ExchangeOrderId.Value : DBNull.Value);
+            cmd.Parameters.AddWithValue("fillPrice",       execution.FillPrice);
+            cmd.Parameters.AddWithValue("status",          execution.Status.ToString());
+            cmd.Parameters.AddWithValue("errorMessage",    execution.ErrorMessage is not null
+                ? (object)execution.ErrorMessage : DBNull.Value);
+            cmd.Parameters.AddWithValue("executedAt",      execution.ExecutedAt);
+
+            await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            } // end cmd
+            } // end conn
+        }
+        catch (NpgsqlException ex)
         {
-        cmd.Parameters.AddWithValue("id",              execution.Id);
-        cmd.Parameters.AddWithValue("orderId",         execution.OrderId);
-        cmd.Parameters.AddWithValue("tenantId",        execution.TenantId);
-        cmd.Parameters.AddWithValue("exchangeOrderId", execution.ExchangeOrderId.HasValue
-            ? (object)execution.ExchangeOrderId.Value : DBNull.Value);
-        cmd.Parameters.AddWithValue("fillPrice",       execution.FillPrice);
-        cmd.Parameters.AddWithValue("status",          execution.Status.ToString());
-        cmd.Parameters.AddWithValue("errorMessage",    execution.ErrorMessage is not null
-            ? (object)execution.ErrorMessage : DBNull.Value);
-        cmd.Parameters.AddWithValue("executedAt",      execution.ExecutedAt);
+            throw new RetryableProcessingException(
+                $"Failed to save execution {execution.Id} for order {execution.OrderId}.", ex);
+        }
 
-        await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
-        } // end cmd
-        } // end conn
         LogSaved(_logger, execution.Id, execution.OrderId);
     }
 

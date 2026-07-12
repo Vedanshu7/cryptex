@@ -19,11 +19,21 @@ from quixstreams.dataframe.windows import First, Last, Max, Min, Sum
 from quixstreams.models.timestamps import TimestampType
 
 from shared.db_client import get_db_connection
+from shared.dlq import (
+    DlqPublisher,
+    build_dlq_error_handler,
+    build_safe_json_deserializer,
+    call_with_retries,
+)
+from shared.exceptions import DatabaseError, RetryExhaustedError
+from shared.kafka_client import KafkaClientFactory
 from shared.logger import get_logger
 from shared.metrics import candles_published
 from shared.models import Candle
 
 _logger = get_logger(__name__)
+
+SERVICE_NAME = "candle-aggregator"
 
 TIMEFRAME_MINUTES: int = int(os.getenv("CANDLE_TIMEFRAME_MINUTES", "5"))
 KAFKA_BROKERS: str = os.getenv("KAFKA_BROKERS", "kafka:9092")
@@ -57,34 +67,46 @@ def _build_candle(symbol: str, window: dict[str, Any], timeframe_minutes: int) -
     )
 
 
-def _persist_candle(candle: Candle) -> None:
+def _do_persist(candle: Candle) -> None:
     """Insert a completed candle into the TimescaleDB candles hypertable."""
-    try:
-        with get_db_connection() as conn, conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO candles
-                    (time, symbol, open, high, low, close, volume, timeframe)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT DO NOTHING
-                """,
-                (
-                    candle.opened_at,
-                    candle.symbol,
-                    candle.open,
-                    candle.high,
-                    candle.low,
-                    candle.close,
-                    candle.volume,
-                    candle.timeframe,
-                ),
-            )
-    except Exception as exc:
-        # Log but don't crash — Kafka delivery of the candle happens independently.
-        _logger.error(
-            "Failed to persist candle to TimescaleDB.",
-            extra={"symbol": candle.symbol, "error": str(exc)},
+    with get_db_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO candles
+                (time, symbol, open, high, low, close, volume, timeframe)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT DO NOTHING
+            """,
+            (
+                candle.opened_at,
+                candle.symbol,
+                candle.open,
+                candle.high,
+                candle.low,
+                candle.close,
+                candle.volume,
+                candle.timeframe,
+            ),
         )
+
+
+def _persist_candle(candle: Candle) -> None:
+    """Insert a completed candle, retrying transient DB failures with backoff.
+
+    Raises:
+        RetryExhaustedError: The DB write failed on every attempt. Left to
+            propagate — the caller runs inside a Quix Streams `.apply()`, so
+            this reaches the framework's own try/except and gets routed to
+            `on_processing_error` (see build_application()), rather than
+            being silently swallowed.
+    """
+    call_with_retries(
+        lambda: _do_persist(candle),
+        retryable_exceptions=(DatabaseError,),
+        max_attempts=3,
+        service=SERVICE_NAME,
+        operation="persist_candle",
+    )
 
 
 def _on_window_closed(
@@ -129,16 +151,23 @@ def _extract_tick_timestamp(
 
 def build_application() -> Application:
     """Wire the Quix Streams topology: raw ticks -> tumbling window -> candles."""
+    dlq = DlqPublisher(KafkaClientFactory.create_producer(f"{SERVICE_NAME}-dlq"))
+    error_handler = build_dlq_error_handler(
+        dlq, safe_exceptions=(RetryExhaustedError,), service=SERVICE_NAME
+    )
+
     app = Application(
         broker_address=KAFKA_BROKERS,
         consumer_group=CONSUMER_GROUP,
         auto_offset_reset="latest",
+        on_processing_error=error_handler,
+        on_producer_error=error_handler,
     )
 
     input_topic = app.topic(
         INPUT_TOPIC,
         key_deserializer="str",
-        value_deserializer="json",
+        value_deserializer=build_safe_json_deserializer(dlq, SERVICE_NAME),
         timestamp_extractor=_extract_tick_timestamp,
     )
     output_topic = app.topic(OUTPUT_TOPIC, key_serializer="str", value_serializer="json")

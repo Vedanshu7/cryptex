@@ -16,15 +16,18 @@ public sealed class EmsTopicSettingsDeriverTests
         settings.OutputTopic.Should().Be("order-fills");
     }
 
-    [Fact]
-    public void DeriveFromRegion_RegionSet_DerivesBothTopics()
+    [Theory]
+    [InlineData("tokyo")]
+    [InlineData("sgp")]
+    [InlineData("eu")]
+    public void DeriveFromRegion_RegionSet_DerivesBothTopics(string region)
     {
-        EmsTopicSettings settings = new() { Region = "tokyo" };
+        EmsTopicSettings settings = new() { Region = region };
 
         EmsTopicSettingsDeriver.DeriveFromRegion(settings, ["tokyo", "sgp", "eu"]);
 
-        settings.InputTopic.Should().Be("tokyo.validated-orders");
-        settings.OutputTopic.Should().Be("tokyo.order-fills");
+        settings.InputTopic.Should().Be($"{region}.validated-orders");
+        settings.OutputTopic.Should().Be($"{region}.order-fills");
     }
 
     [Fact]

@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using TradingPlatform.Common.Exceptions;
 using TradingPlatform.Common.Kafka;
 using TradingPlatform.EMS.Application.Commands;
 using TradingPlatform.EMS.Application.Settings;
@@ -15,11 +16,14 @@ namespace TradingPlatform.EMS.Infrastructure.Kafka;
 /// Background service that consumes validated orders from the configured topic
 /// and dispatches <see cref="ExecuteOrderCommand"/> via MediatR.
 /// The topic is set via EMS__Topics__InputTopic — each regional EMS instance
-/// reads from its own topic (e.g. tokyo.validated-orders).
+/// reads from its own topic (e.g. tokyo.validated-orders). Per-message
+/// processing failures go through <see cref="IRetryingDlqDispatcher"/>, which
+/// retries transient failures with backoff and quarantines anything it can't
+/// recover from to "{InputTopic}.dlq" instead of crashing this service.
 /// </summary>
 public sealed partial class EmsKafkaConsumerService : BackgroundService
 {
-    private static readonly JsonSerializerOptions JsonOptions = new()
+    private static readonly JsonSerializerOptions _jsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
     };
@@ -27,20 +31,24 @@ public sealed partial class EmsKafkaConsumerService : BackgroundService
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<EmsKafkaConsumerService> _logger;
     private readonly IConsumer<string, string> _consumer;
+    private readonly IRetryingDlqDispatcher _dispatcher;
+    private readonly string _inputTopic;
 
     /// <summary>Initializes the background service.</summary>
     public EmsKafkaConsumerService(
         IServiceScopeFactory scopeFactory,
         ILogger<EmsKafkaConsumerService> logger,
         IKafkaConsumerFactory consumerFactory,
+        IRetryingDlqDispatcher dispatcher,
         IOptions<EmsTopicSettings> topics)
     {
         ArgumentNullException.ThrowIfNull(consumerFactory);
         ArgumentNullException.ThrowIfNull(topics);
         _scopeFactory = scopeFactory;
         _logger       = logger;
-        string inputTopic = topics.Value.InputTopic;
-        _consumer = consumerFactory.Create($"ems-{inputTopic}", [inputTopic]);
+        _dispatcher   = dispatcher;
+        _inputTopic   = topics.Value.InputTopic;
+        _consumer = consumerFactory.Create($"ems-{_inputTopic}", [_inputTopic]);
     }
 
     /// <inheritdoc/>
@@ -63,8 +71,12 @@ public sealed partial class EmsKafkaConsumerService : BackgroundService
                             continue;
                         }
 
-                        await _ProcessMessageAsync(result.Message.Value, stoppingToken)
-                            .ConfigureAwait(false);
+                        await _dispatcher.DispatchAsync(
+                            _inputTopic,
+                            result.Message.Key,
+                            result.Message.Value,
+                            ct => _ProcessMessageAsync(result.Message.Value, ct),
+                            stoppingToken).ConfigureAwait(false);
                     }
                     catch (OperationCanceledException)
                     {
@@ -105,12 +117,12 @@ public sealed partial class EmsKafkaConsumerService : BackgroundService
         IMediator mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
 
         ExecuteOrderCommand? command = JsonSerializer.Deserialize<ExecuteOrderCommand>(
-            messageValue, JsonOptions);
+            messageValue, _jsonOptions);
 
         if (command is null)
         {
-            LogDeserializationFailed(_logger, messageValue[..Math.Min(100, messageValue.Length)]);
-            return;
+            throw new NonRetryableProcessingException(
+                $"Deserialized ExecuteOrderCommand was null: {messageValue[..Math.Min(100, messageValue.Length)]}.");
         }
 
         await mediator.Send(command, cancellationToken).ConfigureAwait(false);
@@ -124,7 +136,4 @@ public sealed partial class EmsKafkaConsumerService : BackgroundService
 
     [LoggerMessage(Level = LogLevel.Error, Message = "EMS Kafka consumer error.")]
     private static partial void LogError(ILogger logger, Exception ex);
-
-    [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to deserialize validated-orders message: {Snippet}.")]
-    private static partial void LogDeserializationFailed(ILogger logger, string snippet);
 }

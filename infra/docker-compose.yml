@@ -48,6 +48,141 @@ services:
     entrypoint: ["/bin/bash", "/create-topics.sh"]
     restart: on-failure
 
+  # ── Regional Kafka brokers ───────────────────────────────────────────────────
+  # One single-node KRaft broker per region, simulating real regional Kafka
+  # clusters rather than a topic-name prefix on one shared broker. Each is an
+  # independent cluster (own CLUSTER_ID) — MM2 (see the mm2 service below)
+  # mirrors {region}.order-requests in from the central `kafka` broker;
+  # validated-orders/order-fills are created directly here and never leave
+  # this broker. Runs by default (not profile-gated) — this replaces the old
+  # single-shared-broker regional simulation entirely.
+
+  kafka-tokyo:
+    image: confluentinc/cp-kafka:7.6.1
+    restart: unless-stopped
+    ports:
+      - "9194:9094"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-tokyo:9093
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:9094,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-tokyo:9092,PLAINTEXT_HOST://localhost:9194
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      CLUSTER_ID: m_sYR1MiRP2ISKabiMswYQ
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 15s
+      retries: 5
+
+  kafka-sgp:
+    image: confluentinc/cp-kafka:7.6.1
+    restart: unless-stopped
+    ports:
+      - "9294:9094"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-sgp:9093
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:9094,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-sgp:9092,PLAINTEXT_HOST://localhost:9294
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      CLUSTER_ID: NEBkuQ-YT4iDzeg0phM_Ow
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 15s
+      retries: 5
+
+  kafka-eu:
+    image: confluentinc/cp-kafka:7.6.1
+    restart: unless-stopped
+    ports:
+      - "9394:9094"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-eu:9093
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:9094,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-eu:9092,PLAINTEXT_HOST://localhost:9394
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      CLUSTER_ID: iLWrROUMT9qHYmiCzfwCkg
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 15s
+      retries: 5
+
+  kafka-tokyo-init:
+    image: confluentinc/cp-kafka:7.6.1
+    depends_on:
+      kafka-tokyo:
+        condition: service_healthy
+    volumes:
+      - ./kafka/create-regional-topics.sh:/create-regional-topics.sh
+    environment:
+      KAFKA_BROKER: kafka-tokyo:9092
+      REGION: tokyo
+    entrypoint: ["/bin/bash", "/create-regional-topics.sh"]
+    restart: on-failure
+
+  kafka-sgp-init:
+    image: confluentinc/cp-kafka:7.6.1
+    depends_on:
+      kafka-sgp:
+        condition: service_healthy
+    volumes:
+      - ./kafka/create-regional-topics.sh:/create-regional-topics.sh
+    environment:
+      KAFKA_BROKER: kafka-sgp:9092
+      REGION: sgp
+    entrypoint: ["/bin/bash", "/create-regional-topics.sh"]
+    restart: on-failure
+
+  kafka-eu-init:
+    image: confluentinc/cp-kafka:7.6.1
+    depends_on:
+      kafka-eu:
+        condition: service_healthy
+    volumes:
+      - ./kafka/create-regional-topics.sh:/create-regional-topics.sh
+    environment:
+      KAFKA_BROKER: kafka-eu:9092
+      REGION: eu
+    entrypoint: ["/bin/bash", "/create-regional-topics.sh"]
+    restart: on-failure
+
+  # Mirrors {region}.order-requests from the central `kafka` broker onto each
+  # regional broker (central -> region only, one-directional — see
+  # kafka/mm2.properties). Needs every broker's own topics to already exist
+  # (central's for the source side, each region's for the destination side),
+  # so it waits on every *-init service, not just `kafka-init`.
+  mm2:
+    image: confluentinc/cp-kafka:7.6.1
+    restart: unless-stopped
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      kafka-tokyo-init:
+        condition: service_completed_successfully
+      kafka-sgp-init:
+        condition: service_completed_successfully
+      kafka-eu-init:
+        condition: service_completed_successfully
+    volumes:
+      - ./kafka/mm2.properties:/mm2.properties:ro
+    entrypoint: ["/bin/bash", "-c", "connect-mirror-maker /mm2.properties"]
+
   # ── Database ─────────────────────────────────────────────────────────────────
 
   postgres:
@@ -76,6 +211,20 @@ services:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       retries: 3
+
+  # Bare Redis has no Prometheus /metrics endpoint of its own — this
+  # translates INFO/latency stats into one, scraped by the "redis" job
+  # in observability/prometheus/prometheus.yml.
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.62.0-alpine
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "9121:9121"
+    environment:
+      REDIS_ADDR: redis://redis:6379
 
   # ── Pipeline (Python) ─────────────────────────────────────────────────────────
 
@@ -122,12 +271,15 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     volumes:
       - ../pipeline/universe.json:/app/universe.json:ro
     environment:
       KAFKA_BROKERS: kafka:9092
       DATABASE_URL: postgresql://trading:${POSTGRES_PASSWORD}@postgres/trading
       UNIVERSE_FILE: /app/universe.json
+      REDIS_URL: redis://redis:6379/0
       SIGNAL_MIN_CONFIDENCE: ${SIGNAL_MIN_CONFIDENCE:-0.7}
       SIGNAL_TTL_SECONDS: ${SIGNAL_TTL_SECONDS:-90}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
@@ -142,22 +294,35 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     volumes:
       - ../pipeline/universe.json:/app/universe.json:ro
     environment:
       KAFKA_BROKERS: kafka:9092
       DATABASE_URL: postgresql://trading:${POSTGRES_PASSWORD}@postgres/trading
       UNIVERSE_FILE: /app/universe.json
+      REDIS_URL: redis://redis:6379/0
       SIGNAL_INTERVAL_SECONDS: ${SIGNAL_INTERVAL_SECONDS:-300}
+      SIGNAL_SOURCE: ${SIGNAL_SOURCE:-ml}
+      KALMAN_SIGNAL_INTERVAL_SECONDS: ${KALMAN_SIGNAL_INTERVAL_SECONDS:-300}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
 
   # ── Engine (C# .NET 8) ───────────────────────────────────────────────────────
-  # Regional deployment pattern: same Docker image, different OMS__Topics__* env vars.
-  # Each OMS/EMS pair is self-contained after the signal router publishes to
-  # the regional order-requests topic — no cross-region Kafka traffic after that point.
+  # Regional deployment pattern: same Docker image, different OMS__Topics__* env
+  # vars AND a different regional Kafka broker (Kafka__Brokers). Each OMS/EMS
+  # pair talks only to its own region's broker: order-requests is mirrored in
+  # by MM2 (see the mm2 service above), validated-orders/order-fills are fully
+  # local. No cross-region Kafka traffic anywhere after signal-router publishes
+  # to the central broker.
   #
-  # Local dev runs the Tokyo region only (Binance testnet covers all symbols).
-  # To add SGP or EU: copy the tokyo block, change topic prefixes + exchange URLs.
+  # All three regions run by default. sgp/eu reuse the Binance__* env vars as
+  # placeholders — there's no Crypto.com/Deribit REST client yet, so oms-sgp/
+  # ems-sgp/oms-eu/ems-eu cannot actually place exchange orders. That's fine:
+  # ExecuteOrderHandler's HttpRequestException handling plus the DLQ/retry
+  # mechanism (RetryingDlqDispatcher) mean order placement there degrades to
+  # "retry, then quarantine to the DLQ topic" instead of crashing the process.
+  # Building real Crypto.com/Deribit clients is separate, larger, follow-up work.
 
   oms-tokyo:
     build:
@@ -165,7 +330,7 @@ services:
       dockerfile: src/OMS/TradingPlatform.OMS.Api/Dockerfile
     restart: unless-stopped
     depends_on:
-      kafka:
+      kafka-tokyo:
         condition: service_healthy
       postgres:
         condition: service_healthy
@@ -175,7 +340,7 @@ services:
       - ../pipeline/universe.json:/app/universe.json:ro
     environment:
       ConnectionStrings__Postgres: Host=postgres;Database=trading;Username=trading;Password=${POSTGRES_PASSWORD}
-      Kafka__Brokers: kafka:9092
+      Kafka__Brokers: kafka-tokyo:9092
       UNIVERSE_FILE: /app/universe.json
       # Topic names derive from Region (see OmsTopicSettingsDeriver) — startup
       # fails fast if "tokyo" isn't in universe.json. Set OMS__Topics__* env
@@ -192,19 +357,115 @@ services:
       dockerfile: src/EMS/TradingPlatform.EMS.Api/Dockerfile
     restart: unless-stopped
     depends_on:
-      kafka:
+      kafka-tokyo:
         condition: service_healthy
     ports:
       - "5012:8080"
     volumes:
       - ../pipeline/universe.json:/app/universe.json:ro
     environment:
-      Kafka__Brokers: kafka:9092
+      Kafka__Brokers: kafka-tokyo:9092
       UNIVERSE_FILE: /app/universe.json
       # Topic names derive from Region (see EmsTopicSettingsDeriver) — startup
       # fails fast if "tokyo" isn't in universe.json. Set EMS__Topics__* env
       # vars instead to override an individual derived name.
       EMS__Topics__Region: tokyo
+      Binance__BaseUrl: ${BINANCE_BASE_URL:-https://testnet.binance.vision}
+      Binance__ApiKey: ${BINANCE_API_KEY}
+      Binance__SecretKey: ${BINANCE_SECRET_KEY}
+      ASPNETCORE_ENVIRONMENT: Development
+
+  oms-sgp:
+    build:
+      context: ../engine
+      dockerfile: src/OMS/TradingPlatform.OMS.Api/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      kafka-sgp:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    ports:
+      - "5021:8080"
+    volumes:
+      - ../pipeline/universe.json:/app/universe.json:ro
+    environment:
+      ConnectionStrings__Postgres: Host=postgres;Database=trading;Username=trading;Password=${POSTGRES_PASSWORD}
+      Kafka__Brokers: kafka-sgp:9092
+      UNIVERSE_FILE: /app/universe.json
+      OMS__Topics__Region: sgp
+      # Placeholder — sgp's real exchange is crypto_com (see universe.json);
+      # no Crypto.com REST client exists yet. See the note above this section.
+      Binance__BaseUrl: ${BINANCE_BASE_URL:-https://testnet.binance.vision}
+      Binance__ApiKey: ${BINANCE_API_KEY}
+      Binance__SecretKey: ${BINANCE_SECRET_KEY}
+      ASPNETCORE_ENVIRONMENT: Development
+
+  ems-sgp:
+    build:
+      context: ../engine
+      dockerfile: src/EMS/TradingPlatform.EMS.Api/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      kafka-sgp:
+        condition: service_healthy
+    ports:
+      - "5022:8080"
+    volumes:
+      - ../pipeline/universe.json:/app/universe.json:ro
+    environment:
+      Kafka__Brokers: kafka-sgp:9092
+      UNIVERSE_FILE: /app/universe.json
+      EMS__Topics__Region: sgp
+      # Placeholder — see the note above this section.
+      Binance__BaseUrl: ${BINANCE_BASE_URL:-https://testnet.binance.vision}
+      Binance__ApiKey: ${BINANCE_API_KEY}
+      Binance__SecretKey: ${BINANCE_SECRET_KEY}
+      ASPNETCORE_ENVIRONMENT: Development
+
+  oms-eu:
+    build:
+      context: ../engine
+      dockerfile: src/OMS/TradingPlatform.OMS.Api/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      kafka-eu:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    ports:
+      - "5031:8080"
+    volumes:
+      - ../pipeline/universe.json:/app/universe.json:ro
+    environment:
+      ConnectionStrings__Postgres: Host=postgres;Database=trading;Username=trading;Password=${POSTGRES_PASSWORD}
+      Kafka__Brokers: kafka-eu:9092
+      UNIVERSE_FILE: /app/universe.json
+      OMS__Topics__Region: eu
+      # Placeholder — eu's real exchange is deribit (see universe.json); no
+      # Deribit REST client exists yet. See the note above this section.
+      Binance__BaseUrl: ${BINANCE_BASE_URL:-https://testnet.binance.vision}
+      Binance__ApiKey: ${BINANCE_API_KEY}
+      Binance__SecretKey: ${BINANCE_SECRET_KEY}
+      ASPNETCORE_ENVIRONMENT: Development
+
+  ems-eu:
+    build:
+      context: ../engine
+      dockerfile: src/EMS/TradingPlatform.EMS.Api/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      kafka-eu:
+        condition: service_healthy
+    ports:
+      - "5032:8080"
+    volumes:
+      - ../pipeline/universe.json:/app/universe.json:ro
+    environment:
+      Kafka__Brokers: kafka-eu:9092
+      UNIVERSE_FILE: /app/universe.json
+      EMS__Topics__Region: eu
+      # Placeholder — see the note above this section.
       Binance__BaseUrl: ${BINANCE_BASE_URL:-https://testnet.binance.vision}
       Binance__ApiKey: ${BINANCE_API_KEY}
       Binance__SecretKey: ${BINANCE_SECRET_KEY}
@@ -262,9 +523,20 @@ services:
       - "9090:9090"
     volumes:
       - ../observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../observability/prometheus/rules:/etc/prometheus/rules:ro
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.retention.time=7d"
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    restart: unless-stopped
+    ports:
+      - "9093:9093"
+    volumes:
+      - ../observability/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
 
   grafana:
     image: grafana/grafana:10.4.2
