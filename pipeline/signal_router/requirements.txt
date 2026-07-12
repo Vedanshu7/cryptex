@@ -5,7 +5,7 @@ pydantic==2.12.5
 # schema_registry -> authlib -> joserfc chain, unused here but imported eagerly).
 # cryptography>=48.0.0 crashes with SIGILL on linux/arm64 in this environment —
 # verified by bisection; 46.0.2 is the newest version confirmed not to crash.
-cryptography==46.0.2
+cryptography==48.0.1
 psycopg2-binary==2.9.9
 prometheus-client==0.20.0
 redis==5.0.8
