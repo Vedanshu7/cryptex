@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -74,7 +75,7 @@ public sealed partial class ExchangeReconciliationService : IHostedService
             await orderRepo.GetStuckAsync(_minAge, cancellationToken).ConfigureAwait(false);
 
         // Only Validated orders can be ghost trades — Pending means EMS never received them.
-        IReadOnlyList<Order> validated = candidates
+        ReadOnlyCollection<Order> validated = candidates
             .Where(o => o.Status == OrderStatus.Validated)
             .ToList()
             .AsReadOnly();

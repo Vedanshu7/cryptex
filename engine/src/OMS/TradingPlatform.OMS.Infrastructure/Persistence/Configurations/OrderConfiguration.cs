@@ -19,7 +19,7 @@ internal sealed class OrderConfiguration : IEntityTypeConfiguration<Order>
     /// LINQ-to-SQL translator can't turn into an expression tree) back both
     /// directions of the conversion.
     /// </summary>
-    private static readonly IReadOnlyDictionary<OrderStatus, string> _ToDb = new Dictionary<OrderStatus, string>
+    private static readonly Dictionary<OrderStatus, string> _ToDb = new()
     {
         [OrderStatus.Pending]       = "PENDING",
         [OrderStatus.Validated]     = "VALIDATED",
@@ -29,7 +29,7 @@ internal sealed class OrderConfiguration : IEntityTypeConfiguration<Order>
         [OrderStatus.Cancelled]     = "CANCELLED",
     };
 
-    private static readonly IReadOnlyDictionary<string, OrderStatus> _FromDb = new Dictionary<string, OrderStatus>
+    private static readonly Dictionary<string, OrderStatus> _FromDb = new()
     {
         ["PENDING"]        = OrderStatus.Pending,
         ["VALIDATED"]      = OrderStatus.Validated,
